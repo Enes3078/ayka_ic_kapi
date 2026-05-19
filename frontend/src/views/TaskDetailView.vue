@@ -17,6 +17,9 @@
         <button class="btn btn-secondary" @click="showEditModal = true">
           ✏️ Görevi Düzenle
         </button>
+        <button class="btn btn-danger" @click="confirmDeleteTask" :disabled="deleting">
+          🗑️ Görevi Sil
+        </button>
       </div>
     </div>
 
@@ -120,7 +123,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, inject } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTaskStore } from '../stores/tasks'
 import { useAuthStore } from '../stores/auth'
@@ -131,11 +134,13 @@ const route = useRoute()
 const router = useRouter()
 const taskStore = useTaskStore()
 const auth = useAuthStore()
+const showToast = inject('showToast')
 
 const taskId = route.params.id
 const loading = ref(true)
 const task = ref(null)
 const showEditModal = ref(false)
+const deleting = ref(false)
 
 onMounted(async () => {
   await taskStore.fetchTeams() // Make sure teams are loaded for name mapping
@@ -157,6 +162,23 @@ async function fetchTaskDetail() {
 async function onTaskSaved() {
   showEditModal.value = false
   await fetchTaskDetail()
+}
+
+async function confirmDeleteTask() {
+  if (!window.confirm('Bu görevi silmek istediğinize emin misiniz? Bu işlem geri alınamaz ve tüm ilişkili üretim kalemleri ile iş akışları silinecektir.')) {
+    return
+  }
+  deleting.value = true
+  try {
+    await api.delete(`/tasks/tasks/${taskId}/`)
+    showToast('Görev başarıyla silindi!', 'success')
+    router.push('/tasks')
+  } catch (err) {
+    console.error('Görev silinemedi', err)
+    showToast('Görev silinirken bir hata oluştu.', 'error')
+  } finally {
+    deleting.value = false
+  }
 }
 
 function getTeamName(teamId) {

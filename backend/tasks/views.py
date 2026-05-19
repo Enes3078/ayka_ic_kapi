@@ -73,8 +73,6 @@ class TaskViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ('list', 'retrieve'):
             return [IsAuthenticated()]
-        if self.action == 'destroy':
-            return [IsAdminRole()]
         return [IsAdminOrManager()]
 
     def perform_create(self, serializer):
