@@ -290,7 +290,7 @@
 import { ref, onMounted, watch, computed } from 'vue'
 import api from '../api'
 import jsPDF from 'jspdf'
-import 'jspdf-autotable'
+import autoTable from 'jspdf-autotable'
 
 const activeTab = ref('task')
 const loading = ref(false)
@@ -415,7 +415,7 @@ function exportToPDF() {
       t.product_line_count, t.planned_hours, t.actual_hours
     ]) || []
     
-    doc.autoTable({
+    autoTable(doc, {
       startY: 35,
       head: [[tr2en('Baslik'), 'Durum', 'Oncelik', 'Ekip', 'Atanan', 'Kalem', 'Plan.(sa)', 'Gerc.(sa)']],
       body: rows,
@@ -434,7 +434,7 @@ function exportToPDF() {
       l.target_qty, l.produced_qty, l.scrap_qty
     ]) || []
     
-    doc.autoTable({
+    autoTable(doc, {
       startY: 35,
       head: [['Gorev', 'Kalem Kodu', 'Ekip', 'Isci', 'Hedef', 'Uretilen', 'Fire']],
       body: rows,
@@ -481,7 +481,7 @@ function exportToPDF() {
       themeColor = [139, 92, 246] // Purple
     }
 
-    doc.autoTable({
+    autoTable(doc, {
       startY: 35,
       head: head,
       body: body,

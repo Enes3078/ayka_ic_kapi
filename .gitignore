@@ -1,0 +1,39 @@
+# Python / Django
+__pycache__/
+*.pyc
+*$py.class
+.Python
+backend/venv/
+backend/db.sqlite3
+backend/staticfiles/
+backend/media/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node.js / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.svelte-kit/
+frontend/.next/
+frontend/.nuxt/
+.npm
+.eslintcache
+
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
