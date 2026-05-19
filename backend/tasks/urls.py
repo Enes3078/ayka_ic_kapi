@@ -4,7 +4,8 @@ from .views import (
     TaskViewSet, TeamViewSet, ExcelImportView, 
     WorkerTrackingView, ProductLineViewSet, MyTeamQueueView,
     ReportingDashboardView, WorkerDetailAPIView, MyPastTasksView, ProductViewSet,
-    TaskReportView, ProductionReportView, WorkflowTemplateViewSet
+    TaskReportView, ProductionReportView, WorkflowTemplateViewSet, CncReportView,
+    PvcReportView, GibenReportView, TeamReportView
 )
 
 router = DefaultRouter()
@@ -23,6 +24,10 @@ urlpatterns = [
     path('dashboard-stats/', ReportingDashboardView.as_view(), name='dashboard-stats'),
     path('reports/task-report/', TaskReportView.as_view(), name='task-report'),
     path('reports/production-report/', ProductionReportView.as_view(), name='production-report'),
+    path('reports/cnc-reports/', CncReportView.as_view(), name='cnc-reports'),
+    path('reports/pvc-reports/', PvcReportView.as_view(), name='pvc-reports'),
+    path('reports/giben-reports/', GibenReportView.as_view(), name='giben-reports'),
+    path('reports/team-reports/', TeamReportView.as_view(), name='team-reports'),
     path('', include(router.urls)),
 ]
 

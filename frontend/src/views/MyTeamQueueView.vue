@@ -83,7 +83,104 @@
             </div>
             <div class="form-group mb-16" v-if="form.fire_qty > 0">
               <label class="form-label">Fire Sebebi</label>
-              <input v-model="form.fire_reason" type="text" class="form-input" placeholder="Kısaca açıklayın..." required />
+              <input v-model="form.fire_reason" type="text" class="form-input" placeholder="Kısaca açıklayın..." />
+            </div>
+
+            <!-- Standart Faaliyet Raporu (CNC ve Diğer Tüm Ekipler) -->
+            <div v-if="canFillStandardReport" class="mb-16 p-12 bg-slate-50 rounded" style="border: 1px solid var(--border-color); border-left: 4px solid var(--accent-blue);">
+              <h4 style="font-weight: 700; font-size: 0.95rem; margin-bottom: 12px; color: var(--accent-blue);">📋 Günlük Çalışma Faaliyet Raporu ({{ myTeamName || 'Genel' }})</h4>
+              
+              <div class="form-group mb-12">
+                <label class="form-label">Çalıştığım Saat</label>
+                <input v-model.number="form.working_hours" type="number" step="0.5" min="0.5" class="form-input" placeholder="Örn: 2.5 (saat)" />
+              </div>
+
+              <div class="form-group mb-12">
+                <label class="form-label">Yapılan İş Detayı</label>
+                <textarea v-model="form.work_description" class="form-textarea" placeholder="Neler yapıldı? (Örn: 2 takım kapak ebatlandı)" rows="2"></textarea>
+              </div>
+
+              <div class="form-group mb-12" v-if="form.fire_qty > 0">
+                <label class="form-label">Fire Nerede Oluştu?</label>
+                <input v-model="form.scrap_location" type="text" class="form-input" placeholder="Hangi makinede / aşamada?" />
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">Ek Açıklamalar</label>
+                <textarea v-model="form.activity_notes" class="form-textarea" placeholder="Sorumluya iletmek istediğiniz notlar..." rows="2"></textarea>
+              </div>
+            </div>
+
+            <!-- PVC Dilimleme Faaliyet Raporu -->
+            <div v-if="canFillPvcReport" class="mb-16 p-12 bg-slate-50 rounded" style="border: 1px solid var(--border-color); border-left: 4px solid var(--accent-green);">
+              <h4 style="font-weight: 700; font-size: 0.95rem; margin-bottom: 12px; color: var(--accent-green);">📋 Günlük Çalışma Faaliyet Raporu (PVC DİLİMLEME)</h4>
+              
+              <div class="grid grid-cols-2 gap-12 mb-12">
+                <div class="form-group">
+                  <label class="form-label">Renk</label>
+                  <input v-model="form.pvc_color" type="text" class="form-input" placeholder="Örn: Ant. 2060" />
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Rulo Boy</label>
+                  <input v-model="form.pvc_roll_size" type="text" class="form-input" placeholder="Örn: 1/141cm" />
+                </div>
+              </div>
+
+              <div class="grid grid-cols-2 gap-12 mb-12">
+                <div class="form-group">
+                  <label class="form-label">Metre</label>
+                  <input v-model.number="form.pvc_meters" type="number" step="0.1" min="0" class="form-input" placeholder="Örn: 250" />
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Kesim Ölçüsü</label>
+                  <input v-model="form.pvc_cut_size" type="text" class="form-input" placeholder="Örn: 2 Ad. 17.5/1 Ad 94 / A-38-Abualfadıl" />
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">Ek Açıklamalar</label>
+                <textarea v-model="form.activity_notes" class="form-textarea" placeholder="Açıklama (Örn: Legno 144 Aytaşı 37.cme 115.m / stokta)" rows="2"></textarea>
+              </div>
+            </div>
+
+            <!-- Giben Faaliyet Raporu -->
+            <div v-if="canFillGibenReport" class="mb-16 p-12 bg-slate-50 rounded" style="border: 1px solid var(--border-color); border-left: 4px solid var(--accent-orange);">
+              <h4 style="font-weight: 700; font-size: 0.95rem; margin-bottom: 12px; color: var(--accent-orange);">📋 Günlük Çalışma Faaliyet Raporu (GİBEN)</h4>
+              
+              <div class="form-group mb-12">
+                <label class="form-label">Yapılan İş</label>
+                <textarea v-model="form.work_description" class="form-textarea" placeholder="Yapılan İş (Örn: 93 x 210 x 6mm x 342 Ad.)" rows="2"></textarea>
+              </div>
+
+              <div class="form-group mb-12">
+                <label class="form-label">Kullanılan Tabaka Ölçüsü</label>
+                <input v-model="form.giben_plate_size" type="text" class="form-input" placeholder="Örn: 2800 x 2100 x 6mm" />
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">Ek Açıklamalar</label>
+                <textarea v-model="form.activity_notes" class="form-textarea" placeholder="Varsa notlarınız..." rows="2"></textarea>
+              </div>
+            </div>
+
+            <!-- Stok Kullanım Alanı (Sadece Giben ve PVC Ekipleri İçin) -->
+            <div v-if="canUseStock" class="mb-16 p-12 bg-slate-50 rounded" style="border: 1px solid var(--border-color);">
+              <h4 style="font-weight: 700; font-size: 0.95rem; margin-bottom: 12px; color: var(--accent-purple);">📦 Stoktan Kullanım (MDF / Hammadde)</h4>
+              
+              <div class="form-group mb-12">
+                <label class="form-label">Kullanılan Stok Kalemi</label>
+                <select v-model="form.used_stock_item_id" class="form-select">
+                  <option :value="null">-- Stok Seçilmedi --</option>
+                  <option v-for="st in stockItems" :key="st.id" :value="st.id">
+                    {{ st.name }} (Mevcut: {{ st.current_quantity }} {{ st.unit }})
+                  </option>
+                </select>
+              </div>
+
+              <div class="form-group" v-if="form.used_stock_item_id">
+                <label class="form-label">Kullanılan Miktar</label>
+                <input v-model.number="form.used_stock_quantity" type="number" step="0.01" min="0.01" class="form-input" placeholder="Örn: 2.5" />
+              </div>
             </div>
             
             <div class="form-group mb-24">
@@ -109,21 +206,44 @@
 </template>
 
 <script setup>
-import { ref, onMounted, inject } from 'vue'
+import { ref, onMounted, inject, computed } from 'vue'
 import api from '../api'
+import { useAuthStore } from '../stores/auth'
 
+const auth = useAuthStore()
 const showToast = inject('showToast')
 const queue = ref([])
 const loading = ref(true)
 
 const showModal = ref(false)
 const selectedItem = ref(null)
-const form = ref({ qty_produced: 0, fire_qty: 0, fire_reason: '', handover: false })
+const form = ref({ qty_produced: 0, fire_qty: 0, fire_reason: '', handover: false, used_stock_item_id: null, used_stock_quantity: null })
 const saving = ref(false)
 const error = ref('')
+const stockItems = ref([])
+
+const myTeamName = computed(() => auth.user?.department || '')
+const canUseStock = computed(() => {
+  const name = myTeamName.value.toUpperCase()
+  return name.includes('GIBEN') || name.includes('GİBEN') || name.includes('PVC')
+})
+const canFillPvcReport = computed(() => {
+  const name = myTeamName.value.toUpperCase()
+  return name.includes('PVC')
+})
+const canFillGibenReport = computed(() => {
+  const name = myTeamName.value.toUpperCase()
+  return name.includes('GIBEN') || name.includes('GİBEN')
+})
+const canFillStandardReport = computed(() => {
+  return !canFillPvcReport.value && !canFillGibenReport.value
+})
 
 onMounted(() => {
   fetchQueue()
+  if (canUseStock.value) {
+    fetchStockItems()
+  }
 })
 
 async function fetchQueue() {
@@ -138,9 +258,24 @@ async function fetchQueue() {
   }
 }
 
+async function fetchStockItems() {
+  try {
+    const res = await api.get('/stock/items/')
+    stockItems.value = res.data.results || res.data
+  } catch (err) {
+    console.error('Stok kalemleri yüklenemedi', err)
+  }
+}
+
 function openLogModal(item) {
   selectedItem.value = item
-  form.value = { qty_produced: 0, fire_qty: 0, fire_reason: '', handover: false }
+  form.value = { 
+    qty_produced: 0, fire_qty: 0, fire_reason: '', handover: false, 
+    used_stock_item_id: null, used_stock_quantity: null,
+    working_hours: null, work_description: '', scrap_location: '', activity_notes: '',
+    pvc_color: '', pvc_roll_size: '', pvc_meters: null, pvc_cut_size: '',
+    giben_plate_size: ''
+  }
   error.value = ''
   showModal.value = true
 }

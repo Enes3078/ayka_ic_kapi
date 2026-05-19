@@ -68,6 +68,25 @@ class ProductLineLogProductionSerializer(serializers.Serializer):
     fire_qty = serializers.IntegerField(min_value=0, default=0)
     fire_reason = serializers.CharField(required=False, default='', allow_blank=True)
     handover = serializers.BooleanField(default=False)
+    
+    # Stock Usage parameters (Optional)
+    used_stock_item_id = serializers.IntegerField(required=False, allow_null=True)
+    used_stock_quantity = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True, min_value=0.01)
+
+    # Activity Report parameters (Optional - CNC etc.)
+    working_hours = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, allow_null=True)
+    work_description = serializers.CharField(required=False, default='', allow_blank=True)
+    scrap_location = serializers.CharField(max_length=200, required=False, default='', allow_blank=True)
+    activity_notes = serializers.CharField(required=False, default='', allow_blank=True)
+
+    # PVC Dilimleme Report parameters
+    pvc_color = serializers.CharField(required=False, default='', allow_blank=True)
+    pvc_roll_size = serializers.CharField(required=False, default='', allow_blank=True)
+    pvc_meters = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
+    pvc_cut_size = serializers.CharField(max_length=200, required=False, default='', allow_blank=True)
+
+    # Giben Report parameters
+    giben_plate_size = serializers.CharField(max_length=200, required=False, default='', allow_blank=True)
 
 
 

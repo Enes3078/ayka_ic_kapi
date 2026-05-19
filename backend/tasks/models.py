@@ -323,6 +323,22 @@ class ProductLineHistory(models.Model):
     qty_produced_at_stage = models.PositiveIntegerField(default=0)
     scrap_qty_at_stage = models.PositiveIntegerField(default=0)
     
+    # Günlük Çalışma Faaliyet Raporu (CNC vb.) İçin Ekstra Alanlar
+    working_hours = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, verbose_name='Çalışılan Saat')
+    work_description = models.TextField(blank=True, default='', verbose_name='Yapılan İş Detayı')
+    scrap_location = models.CharField(max_length=200, blank=True, default='', verbose_name='Fire Nerede Oluştu?')
+    activity_notes = models.TextField(blank=True, default='', verbose_name='Ek Açıklamalar')
+
+    # PVC Dilimleme Ekibi İçin Alanlar
+    pvc_color = models.CharField(max_length=100, blank=True, default='', verbose_name='Renk')
+    pvc_roll_size = models.CharField(max_length=100, blank=True, default='', verbose_name='Rulo Boy')
+    pvc_meters = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name='Metre')
+    pvc_cut_size = models.CharField(max_length=200, blank=True, default='', verbose_name='Kesim Ölçüsü')
+
+    # Giben Ekibi İçin Alanlar
+    giben_plate_size = models.CharField(max_length=200, blank=True, default='', verbose_name='Kullanılan Tabaka Ölçüsü')
+    
+    
     started_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
 

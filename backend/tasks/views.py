@@ -161,6 +161,27 @@ class ProductLineViewSet(viewsets.ModelViewSet):
         scrap = serializer.validated_data['fire_qty']
         reason = serializer.validated_data.get('fire_reason', '')
         is_handover = serializer.validated_data.get('handover', False)
+        
+        used_stock_item_id = serializer.validated_data.get('used_stock_item_id')
+        used_stock_quantity = serializer.validated_data.get('used_stock_quantity')
+
+        # Stok düşümü (varsa)
+        if used_stock_item_id and used_stock_quantity:
+            from stock.models import StockTransaction
+            try:
+                StockTransaction.create_exit(
+                    stock_item_id=used_stock_item_id,
+                    quantity=used_stock_quantity,
+                    user=request.user,
+                    notes=f"Otomatik Üretim Tüketimi ({qty} adet üretim için)",
+                    usage_location=f"Görev: {product_line.task.title} - Model: {product_line.model_code}"
+                )
+            except Exception as e:
+                from django.core.exceptions import ValidationError as DjangoValidationError
+                if isinstance(e, DjangoValidationError):
+                    msg = e.message if hasattr(e, 'message') else str(e)
+                    return Response({'detail': f'Stok düşülemedi: {msg}'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'detail': f'Stok işlem hatası: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Miktarları ekle
         product_line.qty_produced += qty
@@ -190,6 +211,29 @@ class ProductLineViewSet(viewsets.ModelViewSet):
                 if product_line.active_product_index >= len(product_line.workflow_team_ids):
                     product_line.stage_done = True
                     product_line.pending_approval = True
+            
+            # CNC vb. Ekstra Rapor Alanlarını Kaydet
+            if serializer.validated_data.get('working_hours'):
+                history.working_hours = serializer.validated_data['working_hours']
+            if serializer.validated_data.get('work_description'):
+                history.work_description = serializer.validated_data['work_description']
+            if serializer.validated_data.get('scrap_location'):
+                history.scrap_location = serializer.validated_data['scrap_location']
+            if serializer.validated_data.get('activity_notes'):
+                history.activity_notes = serializer.validated_data['activity_notes']
+                
+            # PVC ve Giben
+            if serializer.validated_data.get('pvc_color'):
+                history.pvc_color = serializer.validated_data['pvc_color']
+            if serializer.validated_data.get('pvc_roll_size'):
+                history.pvc_roll_size = serializer.validated_data['pvc_roll_size']
+            if serializer.validated_data.get('pvc_meters'):
+                history.pvc_meters = serializer.validated_data['pvc_meters']
+            if serializer.validated_data.get('pvc_cut_size'):
+                history.pvc_cut_size = serializer.validated_data['pvc_cut_size']
+            if serializer.validated_data.get('giben_plate_size'):
+                history.giben_plate_size = serializer.validated_data['giben_plate_size']
+                
             history.save()
         else:
             if is_handover:
@@ -564,3 +608,239 @@ class ProductionReportView(APIView):
             },
             'logs': logs
         })
+
+class CncReportView(APIView):
+    """
+    GET /api/tasks/reports/cnc-reports/
+    CNC Ekiplerine ait günlük faaliyet raporlarını getirir.
+    """
+    permission_classes = [IsAdminOrManager]
+
+    def get(self, request):
+        from .models import ProductLineHistory
+        from django.utils import timezone
+        import datetime
+
+        date_str = request.query_params.get('date')
+        if not date_str:
+            target_date = timezone.now().date()
+        else:
+            try:
+                target_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
+            except ValueError:
+                target_date = timezone.now().date()
+
+        # CNC ekibi tarafından yapılan ve tamamlanmış veya o gün başlanmış kayıtlar
+        # Filtre: Ekip adında CNC geçmeli ve ek bilgilerden en az biri dolu olmalı
+        from django.db.models import Q
+        qs = ProductLineHistory.objects.filter(
+            team__name__icontains='CNC',
+            started_at__date__lte=target_date
+        ).exclude(
+            completed_at__date__lt=target_date
+        ).filter(
+            Q(working_hours__isnull=False) | 
+            ~Q(work_description='') | 
+            ~Q(activity_notes='')
+        ).select_related('product_line', 'product_line__task', 'worker')
+
+        logs = []
+        for h in qs:
+            logs.append({
+                'task_title': h.product_line.task.title,
+                'model_code': h.product_line.model_code,
+                'worker': h.worker.get_full_name() or h.worker.username if h.worker else '-',
+                'working_hours': float(h.working_hours) if h.working_hours else 0,
+                'work_description': h.work_description,
+                'produced_qty': h.qty_produced_at_stage,
+                'scrap_qty': h.scrap_qty_at_stage,
+                'scrap_location': h.scrap_location,
+                'activity_notes': h.activity_notes,
+                'completed_at': h.completed_at,
+            })
+
+        return Response({
+            'target_date': target_date.strftime('%Y-%m-%d'),
+            'logs': logs
+        })
+
+class PvcReportView(APIView):
+    """
+    GET /api/tasks/reports/pvc-reports/
+    PVC Dilimleme Ekiplerine ait günlük faaliyet raporlarını getirir.
+    """
+    permission_classes = [IsAdminOrManager]
+
+    def get(self, request):
+        from .models import ProductLineHistory
+        from django.utils import timezone
+        import datetime
+
+        date_str = request.query_params.get('date')
+        if not date_str:
+            target_date = timezone.now().date()
+        else:
+            try:
+                target_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
+            except ValueError:
+                target_date = timezone.now().date()
+
+        from django.db.models import Q
+        qs = ProductLineHistory.objects.filter(
+            team__name__icontains='PVC',
+            started_at__date__lte=target_date
+        ).exclude(
+            completed_at__date__lt=target_date
+        ).filter(
+            ~Q(pvc_color='') | 
+            ~Q(pvc_roll_size='') | 
+            Q(pvc_meters__isnull=False) |
+            ~Q(pvc_cut_size='')
+        ).select_related('product_line', 'product_line__task', 'worker')
+
+        logs = []
+        for h in qs:
+            logs.append({
+                'task_title': h.product_line.task.title,
+                'model_code': h.product_line.model_code,
+                'worker': h.worker.get_full_name() or h.worker.username if h.worker else '-',
+                'pvc_color': h.pvc_color,
+                'pvc_roll_size': h.pvc_roll_size,
+                'pvc_meters': float(h.pvc_meters) if h.pvc_meters else 0,
+                'pvc_cut_size': h.pvc_cut_size,
+                'produced_qty': h.qty_produced_at_stage,
+                'scrap_qty': h.scrap_qty_at_stage,
+                'activity_notes': h.activity_notes,
+                'completed_at': h.completed_at,
+            })
+
+        return Response({
+            'target_date': target_date.strftime('%Y-%m-%d'),
+            'logs': logs
+        })
+
+class GibenReportView(APIView):
+    """
+    GET /api/tasks/reports/giben-reports/
+    Giben Ekiplerine ait günlük faaliyet raporlarını getirir.
+    """
+    permission_classes = [IsAdminOrManager]
+
+    def get(self, request):
+        from .models import ProductLineHistory
+        from django.utils import timezone
+        import datetime
+
+        date_str = request.query_params.get('date')
+        if not date_str:
+            target_date = timezone.now().date()
+        else:
+            try:
+                target_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
+            except ValueError:
+                target_date = timezone.now().date()
+
+        from django.db.models import Q
+        qs = ProductLineHistory.objects.filter(
+            team__name__icontains='GIBEN',
+            started_at__date__lte=target_date
+        ).exclude(
+            completed_at__date__lt=target_date
+        ).filter(
+            ~Q(giben_plate_size='') | 
+            ~Q(work_description='')
+        ).select_related('product_line', 'product_line__task', 'worker')
+
+        logs = []
+        for h in qs:
+            logs.append({
+                'task_title': h.product_line.task.title,
+                'model_code': h.product_line.model_code,
+                'worker': h.worker.get_full_name() or h.worker.username if h.worker else '-',
+                'work_description': h.work_description,
+                'giben_plate_size': h.giben_plate_size,
+                'produced_qty': h.qty_produced_at_stage,
+                'activity_notes': h.activity_notes,
+                'completed_at': h.completed_at,
+            })
+
+        return Response({
+            'target_date': target_date.strftime('%Y-%m-%d'),
+            'logs': logs
+        })
+
+
+class TeamReportView(APIView):
+    """
+    GET /api/tasks/reports/team-reports/
+    Dynamic activity report for any selected team_id on a given date.
+    """
+    permission_classes = [IsAdminOrManager]
+
+    def get(self, request):
+        from .models import ProductLineHistory
+        from django.utils import timezone
+        import datetime
+        from django.db.models import Q
+
+        date_str = request.query_params.get('date')
+        team_id = request.query_params.get('team_id')
+
+        if not date_str:
+            target_date = timezone.now().date()
+        else:
+            try:
+                target_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
+            except ValueError:
+                target_date = timezone.now().date()
+
+        if not team_id:
+            return Response({"detail": "team_id parametresi zorunludur."}, status=400)
+
+        # Filter logs for selected team and target date
+        qs = ProductLineHistory.objects.filter(
+            team_id=team_id,
+            started_at__date__lte=target_date
+        ).exclude(
+            completed_at__date__lt=target_date
+        ).filter(
+            Q(working_hours__isnull=False) |
+            ~Q(work_description='') |
+            ~Q(activity_notes='') |
+            ~Q(pvc_color='') |
+            ~Q(pvc_roll_size='') |
+            Q(pvc_meters__isnull=False) |
+            ~Q(pvc_cut_size='') |
+            ~Q(giben_plate_size='')
+        ).select_related('product_line', 'product_line__task', 'worker', 'team')
+
+        logs = []
+        for h in qs:
+            logs.append({
+                'task_title': h.product_line.task.title,
+                'model_code': h.product_line.model_code,
+                'worker': h.worker.get_full_name() or h.worker.username if h.worker else '-',
+                'working_hours': float(h.working_hours) if h.working_hours else 0,
+                'work_description': h.work_description,
+                'scrap_location': h.scrap_location,
+                'activity_notes': h.activity_notes,
+                'produced_qty': h.qty_produced_at_stage,
+                'scrap_qty': h.scrap_qty_at_stage,
+                
+                # PVC specific
+                'pvc_color': h.pvc_color,
+                'pvc_roll_size': h.pvc_roll_size,
+                'pvc_meters': float(h.pvc_meters) if h.pvc_meters else 0,
+                'pvc_cut_size': h.pvc_cut_size,
+
+                # Giben specific
+                'giben_plate_size': h.giben_plate_size,
+                
+                'completed_at': h.completed_at.strftime('%Y-%m-%d %H:%M:%S') if h.completed_at else None,
+            })
+
+        return Response({
+            'target_date': target_date.strftime('%Y-%m-%d'),
+            'logs': logs
+        })
+
