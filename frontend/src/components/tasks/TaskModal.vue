@@ -381,13 +381,51 @@ function loadTemplateToLine(pl, event) {
 async function handleSave() {
   error.value = ''
 
-  if (!form.value.title.trim()) {
-    error.value = 'Başlık zorunludur.'
+  // 1. Görev Başlığı Doğrulaması
+  if (!form.value.title || !form.value.title.trim()) {
+    error.value = 'Eksik veri girdiniz: Görev başlığı doldurulmalıdır.'
+    showToast('Eksik veri girdiniz: Görev başlığı boş bırakılamaz.', 'error')
     return
   }
-  if (form.value.product_lines.length === 0 || !form.value.product_lines.some(pl => pl.model_code.trim())) {
-    error.value = 'En az 1 üretim kalemi (model kodu dolu) gereklidir.'
+
+  // 2. Üretim Kalemleri Sayı Doğrulaması
+  if (form.value.product_lines.length === 0) {
+    error.value = 'Eksik veri girdiniz: En az 1 üretim kalemi eklemelisiniz.'
+    showToast('Eksik veri girdiniz: En az 1 üretim kalemi gereklidir.', 'error')
     return
+  }
+
+  // 3. Her Bir Üretim Kaleminin Kendi Doğrulamaları
+  for (let i = 0; i < form.value.product_lines.length; i++) {
+    const pl = form.value.product_lines[i]
+    const plNum = i + 1
+
+    if (!pl.model_code || !pl.model_code.trim()) {
+      error.value = `Eksik veri girdiniz: #${plNum} numaralı üretim kaleminin Model Kodu doldurulmalıdır.`
+      showToast(`Eksik veri girdiniz: #${plNum} numaralı kalemin Model Kodu boş bırakılamaz.`, 'error')
+      return
+    }
+
+    if (pl.quantity === undefined || pl.quantity === null || pl.quantity < 1) {
+      error.value = `Eksik veri girdiniz: #${plNum} numaralı üretim kaleminin Miktarı en az 1 olmalıdır.`
+      showToast(`Eksik veri girdiniz: #${plNum} numaralı kalemin Miktarı en az 1 olmalıdır.`, 'error')
+      return
+    }
+
+    if (!pl.brief_intro || !pl.brief_intro.trim()) {
+      error.value = `Eksik veri girdiniz: #${plNum} numaralı üretim kaleminin Kısa Açıklama / Talimat alanı doldurulmalıdır.`
+      showToast(`Eksik veri girdiniz: #${plNum} numaralı kalemin Talimat alanı boş bırakılamaz.`, 'error')
+      return
+    }
+
+    // İş akışı adımları eklendiyse, ekip seçimlerinin dolu olup olmadığını kontrol et
+    if (pl.workflow_team_ids && pl.workflow_team_ids.length > 0) {
+      if (pl.workflow_team_ids.some(id => id === null)) {
+        error.value = `Eksik veri girdiniz: #${plNum} numaralı üretim kaleminin İş Akışı Rotasında seçilmemiş ekipler var.`
+        showToast('Lütfen tüm ekipleri seçin veya boş adımları silin.', 'error')
+        return
+      }
+    }
   }
 
   saving.value = true
