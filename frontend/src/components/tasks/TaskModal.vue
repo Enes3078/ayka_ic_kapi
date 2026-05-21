@@ -203,6 +203,7 @@ const error = ref('')
 const teams = ref([])
 const products = ref([])
 const workflowTemplates = ref([])
+const systemSettings = ref(null)
 
 const emptyProductLine = () => ({
   product: null,
@@ -234,6 +235,7 @@ onMounted(async () => {
   teams.value = taskStore.teams.length ? taskStore.teams : await taskStore.fetchTeams()
   await fetchProducts()
   await fetchTemplates()
+  await fetchSettings()
 
   if (props.task) {
     const t = props.task
@@ -272,7 +274,16 @@ async function fetchTemplates() {
     const res = await api.get('/tasks/workflow-templates/')
     workflowTemplates.value = res.data.results || res.data
   } catch (err) {
-    console.error('Şablonlar yüklenemedi', err)
+    console.error('Şablonlar çekilemedi', err)
+  }
+}
+
+async function fetchSettings() {
+  try {
+    const res = await api.get('/tasks/settings/')
+    systemSettings.value = res.data
+  } catch (err) {
+    console.error('Ayarlar çekilemedi', err)
   }
 }
 
@@ -320,6 +331,77 @@ function handleImageUpload(event, index) {
   reader.readAsDataURL(file)
 }
 
+function addWorkingMinutes(startDate, minutesToAdd) {
+  if (!systemSettings.value) {
+    // Ayarlar yüklenmediyse düz saat ekle
+    const sd = new Date(startDate)
+    sd.setMinutes(sd.getMinutes() + minutesToAdd)
+    return sd
+  }
+  
+  const s = systemSettings.value
+  const workDays = s.work_days ? s.work_days.split(',').map(Number) : [0,1,2,3,4,5]
+  
+  const [startH, startM] = s.work_start_time.split(':').map(Number)
+  let endH, endM
+  if (s.overtime_end_time) {
+    [endH, endM] = s.overtime_end_time.split(':').map(Number)
+  } else {
+    [endH, endM] = s.work_end_time.split(':').map(Number)
+  }
+
+  let currentDate = new Date(startDate)
+  let remainingMinutes = minutesToAdd
+  
+  // Maksimum sonsuz döngü koruması
+  let loopCount = 0
+  
+  while (remainingMinutes > 0 && loopCount < 1000) {
+    loopCount++
+    const dayOfWeek = currentDate.getDay() // 0 Pazar, 1 Pzt
+    const backendDay = (dayOfWeek + 6) % 7 // 0 Pzt, 6 Pazar
+    
+    // Tatil günüyse doğrudan ertesi gün mesai başına atla
+    if (!workDays.includes(backendDay)) {
+       currentDate.setDate(currentDate.getDate() + 1)
+       currentDate.setHours(startH, startM, 0, 0)
+       continue
+    }
+    
+    const currentH = currentDate.getHours()
+    const currentM = currentDate.getMinutes()
+    const currentTotalM = currentH * 60 + currentM
+    const shiftStartM = startH * 60 + startM
+    const shiftEndM = endH * 60 + endM
+    
+    // Mesai başlamadıysa mesai başına al
+    if (currentTotalM < shiftStartM) {
+       currentDate.setHours(startH, startM, 0, 0)
+       continue
+    }
+    
+    // Mesai bittiyse ertesi gün mesai başına al
+    if (currentTotalM >= shiftEndM) {
+       currentDate.setDate(currentDate.getDate() + 1)
+       currentDate.setHours(startH, startM, 0, 0)
+       continue
+    }
+    
+    // Mesai içindeyiz, bitişe ne kadar var?
+    const minutesToShiftEnd = shiftEndM - currentTotalM
+    if (remainingMinutes <= minutesToShiftEnd) {
+       currentDate.setMinutes(currentDate.getMinutes() + remainingMinutes)
+       remainingMinutes = 0
+    } else {
+       remainingMinutes -= minutesToShiftEnd
+       currentDate.setDate(currentDate.getDate() + 1)
+       currentDate.setHours(startH, startM, 0, 0)
+    }
+  }
+  
+  return currentDate
+}
+
 function recalculateTaskTimes() {
   let totalMinutes = 0
   
@@ -335,13 +417,11 @@ function recalculateTaskTimes() {
 
   // Bitiş Tarihi Tahmini (Başlangıç varsa ve süre hesaplandıysa)
   if (form.value.start_date && totalMinutes > 0) {
-    const startDate = new Date(form.value.start_date)
-    // Sadece düz saat ekleme yapıyoruz. İleride mesai saatleri vs eklenebilir.
-    startDate.setMinutes(startDate.getMinutes() + totalMinutes)
+    const finalDate = addWorkingMinutes(form.value.start_date, totalMinutes)
     
     // local string formata (YYYY-MM-DDThh:mm) çevirme
-    const offset = startDate.getTimezoneOffset()
-    const localDate = new Date(startDate.getTime() - (offset*60*1000))
+    const offset = finalDate.getTimezoneOffset()
+    const localDate = new Date(finalDate.getTime() - (offset*60*1000))
     form.value.end_date = localDate.toISOString().slice(0,16)
   }
 }

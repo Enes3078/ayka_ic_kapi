@@ -23,6 +23,63 @@
           @click="activeTab = 'templates'">
           İş Akışı Şablonları
         </button>
+        <button 
+          class="tab-btn" 
+          :class="{ active: activeTab === 'general' }" 
+          @click="activeTab = 'general'">
+          Genel Ayarlar
+        </button>
+      </div>
+    </div>
+
+    <!-- GENEL AYARLAR SEKMESİ -->
+    <div v-if="activeTab === 'general'">
+      <div class="card">
+        <h3 class="mb-16 border-b pb-8">Mesai Saatleri ve Çalışma Günleri</h3>
+        <div v-if="loadingSettings" class="loading-container">
+          <div class="spinner"></div>
+        </div>
+        <form v-else @submit.prevent="handleSettingsSave">
+          <div class="grid grid-cols-2 gap-16 mb-24">
+            <div class="form-group">
+              <label class="form-label font-bold text-slate-700">Mesai Başlangıç Saati *</label>
+              <input v-model="settingsForm.work_start_time" type="time" class="form-input" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label font-bold text-slate-700">Mesai Bitiş Saati *</label>
+              <input v-model="settingsForm.work_end_time" type="time" class="form-input" required />
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-16 mb-24 bg-slate-50 p-16 rounded border border-slate-200">
+            <div class="col-span-2">
+              <h4 class="font-bold text-sm text-slate-800 mb-8">Fazla Mesai (Opsiyonel)</h4>
+            </div>
+            <div class="form-group mb-0">
+              <label class="form-label">Fazla Mesai Başlangıç</label>
+              <input v-model="settingsForm.overtime_start_time" type="time" class="form-input" />
+            </div>
+            <div class="form-group mb-0">
+              <label class="form-label">Fazla Mesai Bitiş</label>
+              <input v-model="settingsForm.overtime_end_time" type="time" class="form-input" />
+            </div>
+          </div>
+          <div class="form-group mb-24">
+            <label class="form-label font-bold text-slate-700">Çalışma Günleri *</label>
+            <div class="flex gap-16 flex-wrap mt-8">
+              <label class="flex items-center gap-4 cursor-pointer" v-for="(day, i) in ['Pazartesi','Salı','Çarşamba','Perşembe','Cuma','Cumartesi','Pazar']" :key="i">
+                <input type="checkbox" :value="i.toString()" v-model="selectedWorkDays" class="form-checkbox" />
+                <span :class="{'text-red-600': i===6}">{{ day }}</span>
+              </label>
+            </div>
+            <p class="text-xs text-muted mt-8">İşaretlenmeyen günler tatil sayılır ve bitiş süreleri bir sonraki iş gününe kayar.</p>
+          </div>
+          <div class="flex justify-end pt-16 border-t">
+            <button type="submit" class="btn btn-primary" :disabled="saving">
+              <span v-if="saving" class="spinner" style="width:16px;height:16px;border-width:2px;"></span>
+              <span v-else>💾 Ayarları Kaydet</span>
+            </button>
+          </div>
+        </form>
       </div>
     </div>
 
@@ -391,6 +448,17 @@ const editingTemplate = ref(null)
 const saving = ref(false)
 const error = ref('')
 
+// State (Genel Ayarlar)
+const loadingSettings = ref(true)
+const settingsForm = ref({
+  work_start_time: '08:30:00',
+  work_end_time: '18:30:00',
+  overtime_start_time: null,
+  overtime_end_time: null,
+  work_days: '0,1,2,3,4,5'
+})
+const selectedWorkDays = ref(['0','1','2','3','4','5'])
+
 // Forms
 const userForm = ref({
   first_name: '', last_name: '', username: '', email: '',
@@ -412,7 +480,38 @@ onMounted(() => {
   fetchTeams()
   fetchProducts()
   fetchTemplates()
+  fetchSettings()
 })
+
+// === GENEL AYARLAR ===
+async function fetchSettings() {
+  loadingSettings.value = true
+  try {
+    const res = await api.get('/tasks/settings/')
+    settingsForm.value = res.data
+    if (res.data.work_days) {
+      selectedWorkDays.value = res.data.work_days.split(',')
+    }
+  } catch (err) {
+    console.error('Ayarlar yüklenemedi:', err)
+  } finally {
+    loadingSettings.value = false
+  }
+}
+
+async function handleSettingsSave() {
+  saving.value = true
+  settingsForm.value.work_days = selectedWorkDays.value.sort().join(',')
+  try {
+    await api.put('/tasks/settings/', settingsForm.value)
+    showToast('Genel ayarlar başarıyla kaydedildi.', 'success')
+  } catch (err) {
+    console.error(err)
+    showToast('Ayarlar kaydedilemedi.', 'error')
+  } finally {
+    saving.value = false
+  }
+}
 
 // === USER YÖNETİMİ ===
 async function fetchUsers() {

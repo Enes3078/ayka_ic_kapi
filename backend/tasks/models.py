@@ -1,6 +1,7 @@
 from django.db import models
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 from accounts.models import TeamAssociate
 
 
@@ -338,8 +339,7 @@ class ProductLineHistory(models.Model):
     # Giben Ekibi İçin Alanlar
     giben_plate_size = models.CharField(max_length=200, blank=True, default='', verbose_name='Kullanılan Tabaka Ölçüsü')
     
-    
-    started_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(default=timezone.now)
     completed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
@@ -350,3 +350,33 @@ class ProductLineHistory(models.Model):
     def __str__(self):
         return f"{self.product_line.model_code} - {self.team.name} ({self.started_at.date()})"
 
+
+import datetime
+
+class SystemSettings(models.Model):
+    """
+    Sistem genelindeki ayarları (Mesai saatleri vb.) tutan singleton (tekil) tablo.
+    """
+    work_start_time = models.TimeField(default=datetime.time(8, 30), verbose_name='Mesai Başlangıç Saati')
+    work_end_time = models.TimeField(default=datetime.time(18, 30), verbose_name='Mesai Bitiş Saati')
+    
+    # Ekstra mesai (isteğe bağlı)
+    overtime_start_time = models.TimeField(null=True, blank=True, verbose_name='Fazla Mesai Başlangıç')
+    overtime_end_time = models.TimeField(null=True, blank=True, verbose_name='Fazla Mesai Bitiş')
+    
+    # Hafta sonu çalışma günleri (0=Pazartesi, 6=Pazar)
+    # Örn: "0,1,2,3,4,5" (Pzt-Cmt çalışıyor, Pazar tatil)
+    work_days = models.CharField(max_length=50, default='0,1,2,3,4,5', verbose_name='Çalışma Günleri')
+
+    class Meta:
+        verbose_name = 'Sistem Ayarı'
+        verbose_name_plural = 'Sistem Ayarları'
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get_settings(cls):
+        settings, created = cls.objects.get_or_create(pk=1)
+        return settings

@@ -1,6 +1,5 @@
 from rest_framework import serializers
-from .models import Task, ProductLine, Team, Product, WorkflowTemplate
-from accounts.serializers import UserReadSerializer
+from .models import Task, ProductLine, Team, Product, WorkflowTemplate, SystemSettings
 from accounts.serializers import UserReadSerializer
 
 
@@ -64,6 +63,7 @@ class ProductLineSerializer(serializers.ModelSerializer):
 
 class ProductLineLogProductionSerializer(serializers.Serializer):
     """Üretim girişi ve Handover için serializer."""
+    report_date = serializers.DateField(required=False, allow_null=True)
     qty_produced = serializers.IntegerField(min_value=0)
     fire_qty = serializers.IntegerField(min_value=0, default=0)
     fire_reason = serializers.CharField(required=False, default='', allow_blank=True)
@@ -227,3 +227,8 @@ class ExcelImportSerializer(serializers.Serializer):
                 'Dosya boyutu 10 MB\'ı aşamaz.'
             )
         return value
+
+class SystemSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SystemSettings
+        fields = '__all__'

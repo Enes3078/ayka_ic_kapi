@@ -86,7 +86,13 @@
         </div>
         
         <div class="modal-body">
-          <p class="text-sm text-muted mb-16">Bugün üretim yaptığınız kalemlerin karşısına miktarları girin. İşlem yapmadığınız kalemleri boş bırakın.</p>
+          <div class="mb-16 flex flex-wrap items-center justify-between gap-12 bg-slate-50 p-12 rounded-md border border-slate-200">
+            <p class="text-sm text-muted m-0" style="flex: 1; min-width: 250px;">Bugün (veya geçmişteki bir gün) yaptığınız üretimi kaydedin.</p>
+            <div class="flex items-center gap-8 bg-white p-8 rounded border border-slate-300">
+              <label class="text-sm font-bold text-slate-700 m-0">Rapor Tarihi:</label>
+              <input v-model="reportDate" type="date" class="form-input m-0" style="width: auto; padding: 4px 8px; min-height: unset; height: 32px; font-size: 13px; border: none; background: transparent;" />
+            </div>
+          </div>
           
           <form @submit.prevent="submitBulkReport">
             <!-- 1. TABLO KISMI: Görevler ve Kalemler -->
@@ -126,7 +132,7 @@
                         <td class="p-12 font-bold text-slate-600">{{ pl.quantity }} {{ pl.unit_type }}</td>
                         <td class="p-12 font-bold text-orange-600">{{ pl.remaining }}</td>
                         <td v-if="!canFillPvcReport" class="p-12">
-                          <input v-model.number="bulkData[pl.id].qty_produced" type="number" min="0" :max="pl.remaining" class="form-input text-center" style="width: 80px;" placeholder="0" :disabled="pl.is_upcoming" />
+                          <input v-model.number="bulkData[pl.id].qty_produced" type="number" min="0" class="form-input text-center" style="width: 80px;" placeholder="0" :disabled="pl.is_upcoming" />
                         </td>
                         <td v-else class="p-12 text-center">
                           <label class="flex items-center justify-center gap-4 cursor-pointer" :class="{'opacity-50': pl.is_upcoming}">
@@ -258,6 +264,7 @@ const commonForm = ref({})
 const saving = ref(false)
 const error = ref('')
 const stockItems = ref([])
+const reportDate = ref(new Date().toISOString().split('T')[0])
 
 const myTeamName = computed(() => auth.user?.department || '')
 const canUseStock = computed(() => { const n = myTeamName.value.toUpperCase(); return n.includes('GIBEN') || n.includes('GİBEN') || n.includes('PVC') })
@@ -328,6 +335,27 @@ function openBulkReportModal() {
     bulkData.value[k] = { qty_produced: null, fire_qty: null, is_processed: false, handover: false, work_description: '', fire_reason: '', scrap_location: '' }
   })
 
+  // Auto-fill work_description
+  tasks.value.forEach(t => {
+    t.product_lines.forEach((pl, index) => {
+      if (bulkData.value[pl.id]) {
+        const itemNumber = index + 1
+        const color = pl.variant || pl.pvc_color || ''
+        const dim = pl.dimension || pl.pvc_cut_size || ''
+        
+        let autoDesc = `${t.title} - ${itemNumber}. Kalem (${pl.model_code})`
+        let extras = []
+        if (color) extras.push(color)
+        if (dim) extras.push(dim)
+        if (extras.length > 0) {
+          autoDesc += ` [${extras.join(', ')}]`
+        }
+        
+        bulkData.value[pl.id].work_description = autoDesc
+      }
+    })
+  })
+
   // Reset common form & Auto-fill
   commonForm.value = {
     working_hours: null, activity_notes: '',
@@ -390,6 +418,15 @@ async function submitBulkReport() {
   saving.value = true
   error.value = ''
 
+  const todayStr = new Date().toISOString().split('T')[0]
+  if (reportDate.value < todayStr) {
+    const confirmPast = window.confirm(`Geçmiş bir tarih (${reportDate.value}) için kayıt giriyorsunuz, emin misiniz?`)
+    if (!confirmPast) {
+      saving.value = false
+      return
+    }
+  }
+
   try {
     // 2. Her bir kalem için log-production API isteği oluştur
     const promises = linesToSubmit.map(item => {
@@ -402,6 +439,7 @@ async function submitBulkReport() {
         work_description: item.work_description,
         fire_reason: item.fire_reason,
         scrap_location: item.scrap_location,
+        report_date: reportDate.value,
         used_stocks: commonForm.value.used_stocks ? commonForm.value.used_stocks.filter(s => s.item_id && s.quantity) : []
       }
       return api.post(`/tasks/product-lines/${item.id}/log-production/`, payload)

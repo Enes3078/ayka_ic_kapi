@@ -167,6 +167,8 @@ class ProductLineViewSet(viewsets.ModelViewSet):
         from stock.models import StockTransaction
         from django.core.exceptions import ValidationError as DjangoValidationError
 
+        report_date = serializer.validated_data.get('report_date')
+
         # Eski tekli stok düşümü (geriye dönük uyumluluk için)
         if used_stock_item_id and used_stock_quantity:
             used_stocks.append({'item_id': used_stock_item_id, 'quantity': used_stock_quantity})
@@ -208,11 +210,20 @@ class ProductLineViewSet(viewsets.ModelViewSet):
                 completed_at__isnull=True,
                 defaults={'worker': request.user}
             )
+            
+            if created and report_date:
+                from datetime import datetime, time
+                history.started_at = timezone.make_aware(datetime.combine(report_date, time(17, 0)))
+
             history.qty_produced_at_stage += qty
             history.scrap_qty_at_stage += scrap
             
             if is_handover:
-                history.completed_at = timezone.now()
+                if report_date:
+                    from datetime import datetime, time
+                    history.completed_at = timezone.make_aware(datetime.combine(report_date, time(17, 30)))
+                else:
+                    history.completed_at = timezone.now()
                 # Sonraki aşamaya geç
                 product_line.active_product_index += 1
                 if product_line.active_product_index >= len(product_line.workflow_team_ids):
@@ -310,8 +321,16 @@ class MyTeamQueueView(APIView):
                     'task_due_date': task.due_date.isoformat() if task.due_date else None,
                     'product_lines': [],
                 }
-            
-            remaining = max(0, line.quantity - line.qty_produced)
+            # Kalan miktar ve dinamik Miktar hesaplaması (Kanat/Panel x2 Sadece CNC, Giben, Laminasyon, Kanat için)
+            displayed_quantity = line.quantity
+            item_name = (line.model_code or "").lower()
+            if "kanat" in item_name or "panel" in item_name:
+                user_dept = (user.department or "").lower()
+                target_teams = ["cnc", "giben", "laminasyon", "kanat"]
+                if any(t in user_dept for t in target_teams):
+                    displayed_quantity = line.quantity * 2
+
+            remaining = max(0, displayed_quantity - line.qty_produced)
             task_map[task.id]['product_lines'].append({
                 'id': line.id,
                 'model_code': line.model_code,
@@ -322,7 +341,7 @@ class MyTeamQueueView(APIView):
                 'brief_intro': line.brief_intro,
                 'image_base64': line.image_base64,
                 'unit_type': line.unit_type,
-                'quantity': line.quantity,
+                'quantity': displayed_quantity,
                 'qty_produced': line.qty_produced,
                 'remaining': remaining,
                 'fire_qty': line.fire_qty,
@@ -912,4 +931,29 @@ class TeamReportView(APIView):
             'target_date': target_date.strftime('%Y-%m-%d'),
             'logs': logs
         })
+
+class SystemSettingsView(APIView):
+    """
+    GET /api/tasks/settings/
+    PUT /api/tasks/settings/
+    Mesai saatleri gibi sistem ayarlarını okur ve günceller.
+    """
+    permission_classes = [IsAdminOrManager]
+
+    def get(self, request):
+        from .models import SystemSettings
+        from .serializers import SystemSettingsSerializer
+        settings = SystemSettings.get_settings()
+        serializer = SystemSettingsSerializer(settings)
+        return Response(serializer.data)
+
+    def put(self, request):
+        from .models import SystemSettings
+        from .serializers import SystemSettingsSerializer
+        settings = SystemSettings.get_settings()
+        serializer = SystemSettingsSerializer(settings, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
 

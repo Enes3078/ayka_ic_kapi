@@ -5,7 +5,7 @@ from .views import (
     WorkerTrackingView, ProductLineViewSet, MyTeamQueueView,
     ReportingDashboardView, WorkerDetailAPIView, MyPastTasksView, ProductViewSet,
     TaskReportView, ProductionReportView, WorkflowTemplateViewSet, CncReportView,
-    PvcReportView, GibenReportView, TeamReportView
+    PvcReportView, GibenReportView, TeamReportView, SystemSettingsView
 )
 
 router = DefaultRouter()
@@ -28,6 +28,7 @@ urlpatterns = [
     path('reports/pvc-reports/', PvcReportView.as_view(), name='pvc-reports'),
     path('reports/giben-reports/', GibenReportView.as_view(), name='giben-reports'),
     path('reports/team-reports/', TeamReportView.as_view(), name='team-reports'),
+    path('settings/', SystemSettingsView.as_view(), name='settings'),
     path('', include(router.urls)),
 ]
 
