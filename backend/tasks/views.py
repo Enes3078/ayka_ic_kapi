@@ -162,24 +162,33 @@ class ProductLineViewSet(viewsets.ModelViewSet):
         
         used_stock_item_id = serializer.validated_data.get('used_stock_item_id')
         used_stock_quantity = serializer.validated_data.get('used_stock_quantity')
+        used_stocks = serializer.validated_data.get('used_stocks', [])
 
-        # Stok düşümü (varsa)
+        from stock.models import StockTransaction
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        # Eski tekli stok düşümü (geriye dönük uyumluluk için)
         if used_stock_item_id and used_stock_quantity:
-            from stock.models import StockTransaction
-            try:
-                StockTransaction.create_exit(
-                    stock_item_id=used_stock_item_id,
-                    quantity=used_stock_quantity,
-                    user=request.user,
-                    notes=f"Otomatik Üretim Tüketimi ({qty} adet üretim için)",
-                    usage_location=f"Görev: {product_line.task.title} - Model: {product_line.model_code}"
-                )
-            except Exception as e:
-                from django.core.exceptions import ValidationError as DjangoValidationError
-                if isinstance(e, DjangoValidationError):
-                    msg = e.message if hasattr(e, 'message') else str(e)
-                    return Response({'detail': f'Stok düşülemedi: {msg}'}, status=status.HTTP_400_BAD_REQUEST)
-                return Response({'detail': f'Stok işlem hatası: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+            used_stocks.append({'item_id': used_stock_item_id, 'quantity': used_stock_quantity})
+
+        # Çoklu stok düşümü
+        for stock_usage in used_stocks:
+            item_id = stock_usage.get('item_id')
+            sqty = stock_usage.get('quantity')
+            if item_id and sqty:
+                try:
+                    StockTransaction.create_exit(
+                        stock_item_id=item_id,
+                        quantity=sqty,
+                        user=request.user,
+                        notes=f"Otomatik Üretim Tüketimi ({qty} adet üretim için)",
+                        usage_location=f"Görev: {product_line.task.title} - Model: {product_line.model_code}"
+                    )
+                except Exception as e:
+                    if isinstance(e, DjangoValidationError):
+                        msg = e.message if hasattr(e, 'message') else str(e)
+                        return Response({'detail': f'Stok düşülemedi: {msg}'}, status=status.HTTP_400_BAD_REQUEST)
+                    return Response({'detail': f'Stok işlem hatası: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Miktarları ekle
         product_line.qty_produced += qty
@@ -245,7 +254,8 @@ class ProductLineViewSet(viewsets.ModelViewSet):
 class MyTeamQueueView(APIView):
     """
     GET /api/tasks/my-team-queue/
-    Sadece kullanıcının bulunduğu ekiplerin sırasında olan kalemleri listeler.
+    Çalışanın ekibinde aktif olan görevleri, görev bazlı gruplandırılmış kalemlerle döner.
+    Her kalemde hedef, üretilen ve KALAN miktarlar yer alır.
     """
     permission_classes = [IsAuthenticated]
 
@@ -263,19 +273,80 @@ class MyTeamQueueView(APIView):
             if team_obj:
                 team_ids.add(team_obj.id)
         
-        # ProductLine'ları kontrol et
-        # Not: JSONField üzerinde filtreleme yerine tüm aktif kalemleri çekip Python'da filtreliyoruz 
-        # (Küçük veri setleri için OK, performans için özel index gerekir)
+        # Aktif (tamamlanmamış) kalemleri çek
         active_lines = ProductLine.objects.filter(
             stage_done=False
-        ).select_related('task')
+        ).select_related('task', 'task__owner', 'task__team')
 
-        queue = []
+        # Kullanıcının ekibinde olan VEYA BİR SONRAKİ adımda (yaklaşan) olan kalemleri filtrele
+        my_lines = []
         for line in active_lines:
-            if line.current_team_id in team_ids:
-                queue.append(line)
+            is_current = line.current_team_id in team_ids
+            
+            # Yaklaşan görev kontrolü
+            is_upcoming = False
+            if line.workflow_team_ids and line.active_product_index + 1 < len(line.workflow_team_ids):
+                next_team_id = line.workflow_team_ids[line.active_product_index + 1]
+                if next_team_id in team_ids:
+                    is_upcoming = True
 
-        return Response(ProductLineSerializer(queue, many=True).data)
+            if is_current or is_upcoming:
+                # Obje üzerine geçici olarak flag ekle
+                line.is_upcoming_for_me = not is_current and is_upcoming
+                my_lines.append(line)
+
+        # Görev bazlı gruplandır
+        task_map = {}
+        for line in my_lines:
+            task = line.task
+            if task.id not in task_map:
+                task_map[task.id] = {
+                    'task_id': task.id,
+                    'task_title': task.title,
+                    'task_description': task.description,
+                    'task_status': task.status,
+                    'task_priority': task.priority,
+                    'task_owner': task.owner.get_full_name() or task.owner.username,
+                    'task_due_date': task.due_date.isoformat() if task.due_date else None,
+                    'product_lines': [],
+                }
+            
+            remaining = max(0, line.quantity - line.qty_produced)
+            task_map[task.id]['product_lines'].append({
+                'id': line.id,
+                'model_code': line.model_code,
+                'variant': line.variant,
+                'dimension': line.dimension,
+                'color': line.color,
+                'product_color_code': line.product_color_code,
+                'brief_intro': line.brief_intro,
+                'image_base64': line.image_base64,
+                'unit_type': line.unit_type,
+                'quantity': line.quantity,
+                'qty_produced': line.qty_produced,
+                'remaining': remaining,
+                'fire_qty': line.fire_qty,
+                'completion_rate': line.completion_rate,
+                'workflow_team_ids': line.workflow_team_ids,
+                'active_product_index': line.active_product_index,
+                'stage_done': line.stage_done,
+                'current_team_id': line.current_team_id,
+                'is_upcoming': getattr(line, 'is_upcoming_for_me', False),
+            })
+
+        # Her görev için toplam ilerleme oranı hesapla
+        result = []
+        for task_data in task_map.values():
+            lines = task_data['product_lines']
+            if lines:
+                total_target = sum(pl['quantity'] for pl in lines)
+                total_produced = sum(pl['qty_produced'] for pl in lines)
+                task_data['total_progress'] = round((total_produced / total_target) * 100, 1) if total_target > 0 else 0
+                task_data['total_items'] = len(lines)
+                task_data['total_remaining'] = sum(pl['remaining'] for pl in lines)
+            result.append(task_data)
+
+        return Response(result)
 
 
 class MyPastTasksView(APIView):

@@ -72,6 +72,9 @@ class ProductLineLogProductionSerializer(serializers.Serializer):
     # Stock Usage parameters (Optional)
     used_stock_item_id = serializers.IntegerField(required=False, allow_null=True)
     used_stock_quantity = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True, min_value=0.01)
+    
+    # Multiple Stock Usage (Optional - List of dicts {item_id: int, quantity: decimal})
+    used_stocks = serializers.ListField(child=serializers.DictField(), required=False)
 
     # Activity Report parameters (Optional - CNC etc.)
     working_hours = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, allow_null=True)
