@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from decimal import Decimal
 from .models import StockItem, StockTransaction
 
 
@@ -65,13 +66,13 @@ class StockItemListSerializer(serializers.ModelSerializer):
 
 class StockEntrySerializer(serializers.Serializer):
     """Stok giriş formu."""
-    quantity = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=0.01)
+    quantity = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0.01'))
     notes = serializers.CharField(required=False, default='', allow_blank=True)
 
 
 class StockExitSerializer(serializers.Serializer):
     """Stok çıkış formu."""
-    quantity = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=0.01)
+    quantity = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0.01'))
     notes = serializers.CharField(required=False, default='', allow_blank=True)
 
 

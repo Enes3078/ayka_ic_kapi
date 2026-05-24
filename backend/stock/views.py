@@ -165,15 +165,18 @@ class StockDashboardView(APIView):
             transaction_type='exit'
         ).aggregate(total=Sum('quantity'))['total'] or 0
 
-        # Aylık tüketim (son 6 ay)
+        def add_months(date_value, month_delta):
+            year = date_value.year + ((date_value.month - 1 + month_delta) // 12)
+            month = ((date_value.month - 1 + month_delta) % 12) + 1
+            return date_value.replace(year=year, month=month, day=1)
+
+        # Aylık tüketim (son 6 takvim ayı)
         monthly_consumption = []
         now = timezone.now()
+        current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         for i in range(5, -1, -1):
-            month_start = (now.replace(day=1) - timedelta(days=30 * i)).replace(day=1)
-            if i > 0:
-                month_end = (now.replace(day=1) - timedelta(days=30 * (i - 1))).replace(day=1)
-            else:
-                month_end = now
+            month_start = add_months(current_month_start, -i)
+            month_end = add_months(month_start, 1) if i > 0 else now
             exits = StockTransaction.objects.filter(
                 transaction_type='exit',
                 created_at__gte=month_start,

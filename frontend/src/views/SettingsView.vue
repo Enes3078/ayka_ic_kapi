@@ -19,6 +19,12 @@
         </button>
         <button 
           class="tab-btn" 
+          :class="{ active: activeTab === 'teams' }" 
+          @click="activeTab = 'teams'">
+          Görev Alanları
+        </button>
+        <button 
+          class="tab-btn" 
           :class="{ active: activeTab === 'templates' }" 
           @click="activeTab = 'templates'">
           İş Akışı Şablonları
@@ -29,6 +35,49 @@
           @click="activeTab = 'general'">
           Genel Ayarlar
         </button>
+      </div>
+    </div>
+
+    <!-- GÖREV ALANLARI SEKMESİ -->
+    <div v-if="activeTab === 'teams'">
+      <div class="flex justify-end mb-16">
+        <button class="btn btn-primary" @click="openCreateModal('team')">
+          ＋ Yeni Görev Alanı Ekle
+        </button>
+      </div>
+
+      <div class="card">
+        <div v-if="loadingTeams" class="loading-container">
+          <div class="spinner"></div>
+        </div>
+        <div v-else-if="teams.length === 0" class="empty-state">
+          <div class="empty-state-icon">🏭</div>
+          <div class="empty-state-text">Henüz görev alanı oluşturulmamış.</div>
+        </div>
+        <table v-else class="data-table">
+          <thead>
+            <tr>
+              <th>Görev Alanı</th>
+              <th>Grup / Departman</th>
+              <th>Atanan Kişi</th>
+              <th class="text-right">İşlemler</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="team in teams" :key="team.id">
+              <td style="font-weight: 700;">{{ team.name }}</td>
+              <td>
+                <span v-if="team.department" class="badge badge-medium">{{ team.department }}</span>
+                <span v-else class="text-muted">—</span>
+              </td>
+              <td><span class="badge badge-done">{{ team.member_count || 0 }} kişi</span></td>
+              <td class="text-right">
+                <button class="btn btn-ghost btn-sm" @click="openEditModal('team', team)" title="Düzenle">✏️</button>
+                <button class="btn btn-ghost btn-sm" style="color: var(--accent-red);" @click="confirmDelete('team', team)" title="Sil">🗑</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
@@ -48,6 +97,20 @@
             <div class="form-group">
               <label class="form-label font-bold text-slate-700">Mesai Bitiş Saati *</label>
               <input v-model="settingsForm.work_end_time" type="time" class="form-input" required />
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-16 mb-24 bg-slate-50 p-16 rounded border border-slate-200">
+            <div class="col-span-2">
+              <h4 class="font-bold text-sm text-slate-800 mb-8">Öğle Molası</h4>
+              <p class="text-xs text-muted">Bu aralık planlanan çalışma süresinden düşülür.</p>
+            </div>
+            <div class="form-group mb-0">
+              <label class="form-label">Öğle Molası Başlangıç *</label>
+              <input v-model="settingsForm.lunch_break_start_time" type="time" class="form-input" required />
+            </div>
+            <div class="form-group mb-0">
+              <label class="form-label">Öğle Molası Bitiş *</label>
+              <input v-model="settingsForm.lunch_break_end_time" type="time" class="form-input" required />
             </div>
           </div>
           <div class="grid grid-cols-2 gap-16 mb-24 bg-slate-50 p-16 rounded border border-slate-200">
@@ -105,7 +168,7 @@
               <th>Kullanıcı Adı</th>
               <th>Ad Soyad</th>
               <th>Rol</th>
-              <th>Departman / Ekip</th>
+              <th>Görev Yeri / Alanları</th>
               <th>Durum</th>
               <th class="text-right">İşlemler</th>
             </tr>
@@ -124,8 +187,17 @@
                 </span>
               </td>
               <td>
-                <span v-if="user.department" class="badge badge-medium">{{ user.department }}</span>
-                <span v-else class="text-muted">—</span>
+                <div class="flex flex-wrap gap-4">
+                  <span v-if="user.department" class="badge badge-medium">{{ user.department }}</span>
+                  <span
+                    v-for="teamName in displayTeamNames(user)"
+                    :key="teamName"
+                    class="badge badge-done"
+                  >
+                    {{ teamName }}
+                  </span>
+                  <span v-if="!user.department && !(user.assigned_team_names || []).length" class="text-muted">—</span>
+                </div>
               </td>
               <td>
                 <span v-if="user.is_active" style="color: var(--accent-green); font-weight: 600;">Aktif</span>
@@ -227,6 +299,38 @@
       </div>
     </div>
 
+    <!-- Team Create/Edit Modal -->
+    <div v-if="showTeamModal" class="modal-backdrop" @click.self="showTeamModal = false">
+      <div class="modal-content" style="max-width: 480px;">
+        <div class="modal-header">
+          <h2>{{ editingTeam ? 'Görev Alanını Düzenle' : 'Yeni Görev Alanı Oluştur' }}</h2>
+          <button class="btn btn-ghost btn-icon" @click="showTeamModal = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <form @submit.prevent="handleTeamSave">
+            <div class="form-group mb-12">
+              <label class="form-label">Görev Alanı Adı *</label>
+              <input v-model="teamForm.name" class="form-input" placeholder="Örn: CNC" required />
+            </div>
+
+            <div class="form-group mb-16">
+              <label class="form-label">Grup / Departman</label>
+              <input v-model="teamForm.department" class="form-input" placeholder="Örn: Üretim" />
+            </div>
+
+            <div v-if="error" class="login-error mb-12">{{ error }}</div>
+
+            <div class="flex justify-end gap-12">
+              <button type="button" class="btn btn-secondary" @click="showTeamModal = false">İptal</button>
+              <button type="submit" class="btn btn-primary" :disabled="saving">
+                {{ editingTeam ? 'Güncelle' : 'Kaydet' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
     <!-- User Create/Edit Modal -->
     <div v-if="showUserModal" class="modal-backdrop" @click.self="showUserModal = false">
       <div class="modal-content" style="max-width: 500px;">
@@ -272,11 +376,21 @@
                 </select>
               </div>
               <div class="form-group" style="flex:1">
-                <label class="form-label">Departman (Ekip)</label>
+                <label class="form-label">Ana Görev Yeri</label>
                 <select v-model="userForm.department" class="form-select">
                   <option value="">Atanmadı</option>
                   <option v-for="t in teams" :key="t.id" :value="t.name">{{ t.name }}</option>
                 </select>
+              </div>
+            </div>
+
+            <div class="form-group mb-16">
+              <label class="form-label">Görev Alanları</label>
+              <div class="team-checkbox-grid">
+                <label v-for="t in teams" :key="t.id" class="team-checkbox">
+                  <input type="checkbox" :value="t.id" v-model="userForm.team_ids" />
+                  <span>{{ t.name }}</span>
+                </label>
               </div>
             </div>
 
@@ -430,8 +544,11 @@ const activeTab = ref('users') // 'users' veya 'products'
 const users = ref([])
 const teams = ref([])
 const loadingUsers = ref(true)
+const loadingTeams = ref(true)
 const showUserModal = ref(false)
 const editingUser = ref(null)
+const showTeamModal = ref(false)
+const editingTeam = ref(null)
 
 // State (Ürünler)
 const products = ref([])
@@ -453,6 +570,8 @@ const loadingSettings = ref(true)
 const settingsForm = ref({
   work_start_time: '08:30:00',
   work_end_time: '18:30:00',
+  lunch_break_start_time: '12:30:00',
+  lunch_break_end_time: '13:30:00',
   overtime_start_time: null,
   overtime_end_time: null,
   work_days: '0,1,2,3,4,5'
@@ -462,7 +581,12 @@ const selectedWorkDays = ref(['0','1','2','3','4','5'])
 // Forms
 const userForm = ref({
   first_name: '', last_name: '', username: '', email: '',
-  password: '', role: 'worker', department: '', is_active: true
+  password: '', role: 'worker', department: '', team_ids: [], is_active: true
+})
+
+const teamForm = ref({
+  name: '',
+  department: 'Üretim'
 })
 
 const productForm = ref({
@@ -527,17 +651,25 @@ async function fetchUsers() {
 }
 
 async function fetchTeams() {
+  loadingTeams.value = true
   try {
     const res = await api.get('/tasks/teams/')
     teams.value = res.data.results || res.data
   } catch (err) {
     console.error('Ekipler yüklenemedi', err)
+    showToast('Görev alanları yüklenemedi.', 'error')
+  } finally {
+    loadingTeams.value = false
   }
 }
 
 function roleLabel(role) {
   const map = { admin: 'Yönetici', manager: 'Müdür', worker: 'Çalışan' }
   return map[role] || role
+}
+
+function displayTeamNames(user) {
+  return (user.assigned_team_names || []).filter(teamName => teamName !== user.department)
 }
 
 // === ÜRÜN YÖNETİMİ ===
@@ -571,8 +703,12 @@ function openCreateModal(type) {
   error.value = ''
   if (type === 'user') {
     editingUser.value = null
-    userForm.value = { first_name: '', last_name: '', username: '', email: '', password: '', role: 'worker', department: '', is_active: true }
+    userForm.value = { first_name: '', last_name: '', username: '', email: '', password: '', role: 'worker', department: '', team_ids: [], is_active: true }
     showUserModal.value = true
+  } else if (type === 'team') {
+    editingTeam.value = null
+    teamForm.value = { name: '', department: 'Üretim' }
+    showTeamModal.value = true
   } else if (type === 'product') {
     editingProduct.value = null
     productForm.value = { code: '', name: '', duration_minutes: 0, width_mm: null, length_mm: null, thickness_mm: null, additional_dimensions: '', blade_min_mm: null, blade_max_mm: null }
@@ -588,8 +724,12 @@ function openEditModal(type, item) {
   error.value = ''
   if (type === 'user') {
     editingUser.value = item
-    userForm.value = { ...item, password: '' }
+    userForm.value = { ...item, password: '', team_ids: [...(item.assigned_team_ids || [])] }
     showUserModal.value = true
+  } else if (type === 'team') {
+    editingTeam.value = item
+    teamForm.value = { name: item.name, department: item.department || '' }
+    showTeamModal.value = true
   } else if (type === 'product') {
     editingProduct.value = item
     productForm.value = { ...item }
@@ -605,6 +745,10 @@ async function handleUserSave() {
   saving.value = true
   error.value = ''
   const payload = { ...userForm.value }
+  const primaryTeam = teams.value.find(t => t.name === payload.department)
+  if (primaryTeam && !payload.team_ids.includes(primaryTeam.id)) {
+    payload.team_ids = [...payload.team_ids, primaryTeam.id]
+  }
   if (!payload.password) delete payload.password
 
   try {
@@ -619,6 +763,37 @@ async function handleUserSave() {
     await fetchUsers()
   } catch (err) {
     error.value = err.response?.data?.detail || 'Kullanıcı adı benzersiz olmalıdır.'
+  } finally {
+    saving.value = false
+  }
+}
+
+async function handleTeamSave() {
+  saving.value = true
+  error.value = ''
+  const payload = {
+    name: teamForm.value.name.trim(),
+    department: teamForm.value.department.trim()
+  }
+
+  try {
+    if (editingTeam.value) {
+      await api.patch(`/tasks/teams/${editingTeam.value.id}/`, payload)
+      showToast('Görev alanı güncellendi.', 'success')
+    } else {
+      await api.post('/tasks/teams/', payload)
+      showToast('Yeni görev alanı eklendi.', 'success')
+    }
+    showTeamModal.value = false
+    await fetchTeams()
+    await fetchUsers()
+  } catch (err) {
+    const data = err.response?.data
+    if (typeof data === 'object') {
+      error.value = Object.entries(data).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join(' | ')
+    } else {
+      error.value = 'Görev alanı kaydedilemedi.'
+    }
   } finally {
     saving.value = false
   }
@@ -691,6 +866,17 @@ async function confirmDelete(type, item) {
         showToast('Kullanıcı silinemedi.', 'error')
       }
     }
+  } else if (type === 'team') {
+    if (confirm(`"${item.name}" görev alanını silmek istediğinize emin misiniz? Bu alan kullanıcı atamalarından da kaldırılır.`)) {
+      try {
+        await api.delete(`/tasks/teams/${item.id}/`)
+        showToast('Görev alanı silindi.', 'success')
+        await fetchTeams()
+        await fetchUsers()
+      } catch (err) {
+        showToast('Görev alanı silinemedi.', 'error')
+      }
+    }
   } else if (type === 'product') {
     if (confirm(`"${item.code} - ${item.name}" ürününü katalogdan silmek istediğinize emin misiniz?`)) {
       try {
@@ -718,6 +904,7 @@ async function confirmDelete(type, item) {
 <style scoped>
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   background: var(--bg-card);
   padding: 6px;
@@ -742,5 +929,25 @@ async function confirmDelete(type, item) {
   background: var(--accent-blue);
   color: white;
   box-shadow: 0 2px 8px rgba(79, 110, 247, 0.3);
+}
+.team-checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.team-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  background: var(--bg-body);
+}
+.team-checkbox input {
+  width: 16px;
+  height: 16px;
 }
 </style>

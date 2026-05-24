@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from decimal import Decimal
 from .models import Task, ProductLine, Team, Product, WorkflowTemplate, SystemSettings
 from accounts.serializers import UserReadSerializer
 
@@ -39,6 +40,7 @@ class ProductSerializer(serializers.ModelSerializer):
 
 class ProductLineSerializer(serializers.ModelSerializer):
     """Üretim kalemi serializer — Task içinde nested olarak kullanılır."""
+    id = serializers.IntegerField(required=False)
     total_planned_minutes = serializers.ReadOnlyField()
     completion_rate = serializers.ReadOnlyField()
     current_team_id = serializers.ReadOnlyField()
@@ -46,7 +48,7 @@ class ProductLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProductLine
         fields = [
-            'id', 'product', 'image_base64', 'model_code', 'variant', 'dimension', 'color', 'product_color_code', 
+            'id', 'product', 'image_base64', 'product_name', 'model_code', 'variant', 'dimension', 'color', 'product_color_code', 
             'blade_depth', 'brief_intro', 'unit_type',
             'quantity', 'qty_produced', 'fire_qty', 'fire_reason', 'fire_image',
             'planning_mode', 'unit_duration_minutes',
@@ -56,7 +58,7 @@ class ProductLineSerializer(serializers.ModelSerializer):
             'notes', 'created_at',
         ]
         read_only_fields = [
-            'id', 'created_at', 'total_planned_minutes', 'completion_rate',
+            'created_at', 'total_planned_minutes', 'completion_rate',
             'active_product_index', 'stage_done', 'pending_approval', 'current_team_id',
             'qty_produced', 'fire_qty'
         ]
@@ -71,10 +73,11 @@ class ProductLineLogProductionSerializer(serializers.Serializer):
     
     # Stock Usage parameters (Optional)
     used_stock_item_id = serializers.IntegerField(required=False, allow_null=True)
-    used_stock_quantity = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True, min_value=0.01)
+    used_stock_quantity = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True, min_value=Decimal('0.01'))
     
     # Multiple Stock Usage (Optional - List of dicts {item_id: int, quantity: decimal})
     used_stocks = serializers.ListField(child=serializers.DictField(), required=False)
+    consume_stock = serializers.BooleanField(default=True)
 
     # Activity Report parameters (Optional - CNC etc.)
     working_hours = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, allow_null=True)
@@ -159,6 +162,12 @@ class TaskDetailSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 'En az 1 üretim kalemi (product line) gereklidir.'
             )
+        for index, line in enumerate(value, start=1):
+            workflow_team_ids = [team_id for team_id in line.get('workflow_team_ids', []) if team_id]
+            if not workflow_team_ids:
+                raise serializers.ValidationError(
+                    f'#{index} üretim kalemi için en az 1 iş akışı ekibi seçilmelidir.'
+                )
         return value
 
     def validate(self, data):
@@ -179,6 +188,15 @@ class TaskDetailSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {'due_date': 'Son tarih, başlangıç tarihinden sonra olmalı.'}
             )
+        if data.get('status') == Task.Status.DONE:
+            if self.instance is None:
+                raise serializers.ValidationError(
+                    {'status': 'Yeni görev doğrudan tamamlandı olarak oluşturulamaz.'}
+                )
+            if self.instance.product_lines.filter(stage_done=False).exists():
+                raise serializers.ValidationError(
+                    {'status': 'Tüm üretim kalemleri tamamlanmadan görev tamamlandı yapılamaz.'}
+                )
         return data
 
     def create(self, validated_data):
@@ -203,12 +221,37 @@ class TaskDetailSerializer(serializers.ModelSerializer):
             setattr(instance, attr, value)
         instance.save()
 
-        # Update product lines if provided
         if product_lines_data is not None:
-            # Delete existing and recreate (simpler for nested updates)
-            instance.product_lines.all().delete()
+            existing_lines = {line.id: line for line in instance.product_lines.all()}
+            seen_ids = set()
+
             for pl_data in product_lines_data:
-                ProductLine.objects.create(task=instance, **pl_data)
+                line_id = pl_data.pop('id', None)
+                if line_id and line_id in existing_lines:
+                    line = existing_lines[line_id]
+                    if line.histories.exists():
+                        locked_fields = {
+                            'quantity',
+                            'workflow_team_ids',
+                            'unit_type',
+                            'product',
+                        }
+                        for field in locked_fields:
+                            pl_data.pop(field, None)
+                    for attr, value in pl_data.items():
+                        setattr(line, attr, value)
+                    line.save()
+                    seen_ids.add(line_id)
+                else:
+                    ProductLine.objects.create(task=instance, **pl_data)
+
+            for line_id, line in existing_lines.items():
+                if line_id not in seen_ids:
+                    if line.histories.exists():
+                        raise serializers.ValidationError(
+                            {'product_lines': f'{line.model_code} üretim geçmişi olduğu için silinemez.'}
+                        )
+                    line.delete()
 
         return instance
 

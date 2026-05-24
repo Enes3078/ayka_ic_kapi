@@ -7,6 +7,21 @@
       </div>
 
       <div class="modal-body">
+        <div v-if="isImportedDraft" class="import-actions">
+          <div>
+            <div class="import-actions-title">Excel içe aktarma kuyruğu</div>
+            <div class="import-actions-text">{{ form.product_lines.length }} kalem kayda hazır.</div>
+          </div>
+          <button
+            v-if="panelLineCount > 0"
+            type="button"
+            class="btn btn-secondary btn-sm"
+            @click="removePanelLines"
+          >
+            Panel Kaldır ({{ panelLineCount }})
+          </button>
+        </div>
+
         <!-- Task Fields -->
         <div class="form-row">
           <div class="form-group" style="flex:2">
@@ -37,6 +52,37 @@
               <option value="in_progress">Devam Ediyor</option>
               <option value="done">Tamamlandı</option>
             </select>
+          </div>
+        </div>
+
+        <div class="assignment-panel mt-12">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Görev Atama Tipi</label>
+              <select v-model="assignmentType" class="form-select" @change="handleAssignmentTypeChange">
+                <option value="">Atama yapılmayacak</option>
+                <option value="person">Kişiye atama</option>
+                <option value="team">Ekibe atama</option>
+              </select>
+            </div>
+            <div v-if="assignmentType === 'person'" class="form-group">
+              <label class="form-label">Atanacak Kişi</label>
+              <select v-model="form.assignee" class="form-select">
+                <option :value="null">Kişi seçin</option>
+                <option v-for="user in activeUsers" :key="user.id" :value="user.id">
+                  {{ userDisplayName(user) }}
+                </option>
+              </select>
+            </div>
+            <div v-if="assignmentType === 'team'" class="form-group">
+              <label class="form-label">Atanacak Ekip</label>
+              <select v-model="form.team" class="form-select">
+                <option :value="null">Ekip seçin</option>
+                <option v-for="team in teams" :key="team.id" :value="team.id">
+                  {{ team.name }}
+                </option>
+              </select>
+            </div>
           </div>
         </div>
 
@@ -85,9 +131,16 @@
 
           <div class="form-row">
             <div class="form-group">
+              <label class="form-label">Ürün Adı</label>
+              <input v-model="pl.product_name" class="form-input" placeholder="Üretilecek ürün ismi" />
+            </div>
+            <div class="form-group">
               <label class="form-label">Model Kodu *</label>
               <input v-model="pl.model_code" class="form-input" placeholder="MK-001" required />
             </div>
+          </div>
+
+          <div class="form-row mt-12">
             <div class="form-group">
               <label class="form-label">Varyant / Renk</label>
               <input v-model="pl.variant" class="form-input" placeholder="Örn: Sol, Beyaz" />
@@ -198,15 +251,22 @@ const auth = useAuthStore()
 const showToast = inject('showToast')
 
 const isEdit = computed(() => !!props.task)
+const isImportedDraft = computed(() => !!props.draftData && !isEdit.value)
+const panelLineCount = computed(() =>
+  form.value.product_lines.filter(pl => normalizeModelCode(pl.model_code) === 'panel').length
+)
 const saving = ref(false)
 const error = ref('')
 const teams = ref([])
+const users = ref([])
 const products = ref([])
 const workflowTemplates = ref([])
 const systemSettings = ref(null)
+const assignmentType = ref('')
 
 const emptyProductLine = () => ({
   product: null,
+  product_name: '',
   model_code: '',
   variant: '',
   dimension: '',
@@ -225,14 +285,31 @@ const form = ref({
   description: '',
   status: 'todo',
   priority: 'medium',
+  assignee: null,
+  team: null,
   start_date: '',
   end_date: '',
   planned_hours: 0,
   product_lines: [emptyProductLine()],
 })
 
+function normalizeModelCode(value) {
+  return String(value || '').trim().toLocaleLowerCase('tr-TR')
+}
+
+function removePanelLines() {
+  const before = form.value.product_lines.length
+  form.value.product_lines = form.value.product_lines.filter(
+    pl => normalizeModelCode(pl.model_code) !== 'panel'
+  )
+  const removed = before - form.value.product_lines.length
+  recalculateTaskTimes()
+  showToast(`${removed} panel kalemi içe aktarma kuyruğundan kaldırıldı.`, 'success')
+}
+
 onMounted(async () => {
   teams.value = taskStore.teams.length ? taskStore.teams : await taskStore.fetchTeams()
+  await fetchUsers()
   await fetchProducts()
   await fetchTemplates()
   await fetchSettings()
@@ -244,6 +321,8 @@ onMounted(async () => {
       description: t.description || '',
       status: t.status || 'todo',
       priority: t.priority || 'medium',
+      assignee: t.assignee || null,
+      team: t.team || null,
       start_date: t.start_date ? t.start_date.slice(0, 16) : '',
       end_date: t.end_date ? t.end_date.slice(0, 16) : '',
       planned_hours: t.planned_hours || 0,
@@ -251,6 +330,7 @@ onMounted(async () => {
         ? t.product_lines.map(pl => ({ ...pl }))
         : [emptyProductLine()],
     }
+    assignmentType.value = t.assignee ? 'person' : (t.team ? 'team' : '')
   } else if (props.draftData) {
     form.value.title = props.draftData.draft_title || ''
     form.value.description = props.draftData.draft_description || ''
@@ -259,6 +339,33 @@ onMounted(async () => {
       : [emptyProductLine()]
   }
 })
+
+const activeUsers = computed(() => users.value.filter(user => user.is_active))
+
+async function fetchUsers() {
+  try {
+    const res = await api.get('/auth/users/')
+    users.value = res.data.results || res.data
+  } catch (err) {
+    console.error('Kullanıcılar yüklenemedi', err)
+  }
+}
+
+function userDisplayName(user) {
+  const fullName = `${user.first_name || ''} ${user.last_name || ''}`.trim()
+  return fullName ? `${fullName} (${user.username})` : user.username
+}
+
+function handleAssignmentTypeChange() {
+  if (assignmentType.value === 'person') {
+    form.value.team = null
+  } else if (assignmentType.value === 'team') {
+    form.value.assignee = null
+  } else {
+    form.value.assignee = null
+    form.value.team = null
+  }
+}
 
 async function fetchProducts() {
   try {
@@ -294,6 +401,7 @@ function onProductSelected(index) {
   const prod = products.value.find(p => p.id === pl.product)
   if (prod) {
     pl.model_code = `${prod.code} - ${prod.name}`
+    pl.product_name = prod.name
     pl.unit_duration_minutes = prod.duration_minutes
     pl.planning_mode = 'fixed'
     
@@ -322,6 +430,11 @@ function onProductSelected(index) {
 function handleImageUpload(event, index) {
   const file = event.target.files[0]
   if (!file) return
+  if (file.size > 1024 * 1024) {
+    showToast('Görsel boyutu en fazla 1 MB olmalıdır.', 'error')
+    event.target.value = ''
+    return
+  }
 
   // Sadece küçük resimler için FileReader (Base64)
   const reader = new FileReader()
@@ -343,15 +456,23 @@ function addWorkingMinutes(startDate, minutesToAdd) {
   const workDays = s.work_days ? s.work_days.split(',').map(Number) : [0,1,2,3,4,5]
   
   const [startH, startM] = s.work_start_time.split(':').map(Number)
-  let endH, endM
-  if (s.overtime_end_time) {
-    [endH, endM] = s.overtime_end_time.split(':').map(Number)
-  } else {
-    [endH, endM] = s.work_end_time.split(':').map(Number)
+  const [endH, endM] = s.work_end_time.split(':').map(Number)
+  const toMinutes = (timeValue) => {
+    const [hours, minutes] = timeValue.split(':').map(Number)
+    return hours * 60 + minutes
   }
 
   let currentDate = new Date(startDate)
   let remainingMinutes = minutesToAdd
+  let lunchStartM = null
+  let lunchEndM = null
+
+  if (s.lunch_break_start_time && s.lunch_break_end_time) {
+    const [lunchStartH, lunchStartMin] = s.lunch_break_start_time.split(':').map(Number)
+    const [lunchEndH, lunchEndMin] = s.lunch_break_end_time.split(':').map(Number)
+    lunchStartM = lunchStartH * 60 + lunchStartMin
+    lunchEndM = lunchEndH * 60 + lunchEndMin
+  }
   
   // Maksimum sonsuz döngü koruması
   let loopCount = 0
@@ -373,30 +494,68 @@ function addWorkingMinutes(startDate, minutesToAdd) {
     const currentTotalM = currentH * 60 + currentM
     const shiftStartM = startH * 60 + startM
     const shiftEndM = endH * 60 + endM
-    
-    // Mesai başlamadıysa mesai başına al
-    if (currentTotalM < shiftStartM) {
-       currentDate.setHours(startH, startM, 0, 0)
-       continue
+    const workSegments = [[shiftStartM, shiftEndM]]
+    if (s.overtime_start_time && s.overtime_end_time) {
+      const overtimeStartM = toMinutes(s.overtime_start_time)
+      const overtimeEndM = toMinutes(s.overtime_end_time)
+      if (overtimeEndM > overtimeStartM) {
+        workSegments.push([overtimeStartM, overtimeEndM])
+      }
     }
-    
-    // Mesai bittiyse ertesi gün mesai başına al
-    if (currentTotalM >= shiftEndM) {
+    workSegments.sort((a, b) => a[0] - b[0])
+    const hasLunchBreak = lunchStartM !== null
+      && lunchEndM !== null
+      && lunchStartM < lunchEndM
+
+    let activeSegment = workSegments.find(([segmentStart, segmentEnd]) =>
+      currentTotalM >= segmentStart && currentTotalM < segmentEnd
+    )
+
+    if (!activeSegment) {
+      const nextSegment = workSegments.find(([segmentStart]) => currentTotalM < segmentStart)
+      if (nextSegment) {
+        currentDate.setHours(Math.floor(nextSegment[0] / 60), nextSegment[0] % 60, 0, 0)
+      } else {
        currentDate.setDate(currentDate.getDate() + 1)
        currentDate.setHours(startH, startM, 0, 0)
+      }
+       continue
+    }
+
+    // Öğle molasındaysak mola bitimine atla; bu süre mesaiden sayılmaz.
+    if (hasLunchBreak && currentTotalM >= lunchStartM && currentTotalM < lunchEndM) {
+       currentDate.setHours(Math.floor(lunchEndM / 60), lunchEndM % 60, 0, 0)
        continue
     }
     
-    // Mesai içindeyiz, bitişe ne kadar var?
-    const minutesToShiftEnd = shiftEndM - currentTotalM
-    if (remainingMinutes <= minutesToShiftEnd) {
+    // Mesai içindeyiz; öğle molasına ya da gün sonuna kadar çalışılabilir süreyi hesapla.
+    let segmentEndM = activeSegment[1]
+    if (hasLunchBreak && currentTotalM < lunchStartM && lunchStartM < segmentEndM) {
+      segmentEndM = lunchStartM
+    }
+
+    const minutesToSegmentEnd = segmentEndM - currentTotalM
+    if (remainingMinutes <= minutesToSegmentEnd) {
        currentDate.setMinutes(currentDate.getMinutes() + remainingMinutes)
        remainingMinutes = 0
     } else {
-       remainingMinutes -= minutesToShiftEnd
-       currentDate.setDate(currentDate.getDate() + 1)
-       currentDate.setHours(startH, startM, 0, 0)
+       remainingMinutes -= minutesToSegmentEnd
+       if (hasLunchBreak && segmentEndM === lunchStartM) {
+          currentDate.setHours(Math.floor(lunchEndM / 60), lunchEndM % 60, 0, 0)
+       } else {
+          const nextSegment = workSegments.find(([segmentStart]) => segmentStart > segmentEndM)
+          if (nextSegment) {
+            currentDate.setHours(Math.floor(nextSegment[0] / 60), nextSegment[0] % 60, 0, 0)
+          } else {
+            currentDate.setDate(currentDate.getDate() + 1)
+            currentDate.setHours(startH, startM, 0, 0)
+          }
+       }
     }
+  }
+
+  if (remainingMinutes > 0) {
+    throw new Error('Planlama süresi hesaplanamadı. Çalışma günleri ve mesai ayarlarını kontrol edin.')
   }
   
   return currentDate
@@ -417,7 +576,13 @@ function recalculateTaskTimes() {
 
   // Bitiş Tarihi Tahmini (Başlangıç varsa ve süre hesaplandıysa)
   if (form.value.start_date && totalMinutes > 0) {
-    const finalDate = addWorkingMinutes(form.value.start_date, totalMinutes)
+    let finalDate
+    try {
+      finalDate = addWorkingMinutes(form.value.start_date, totalMinutes)
+    } catch (err) {
+      error.value = err.message
+      return
+    }
     
     // local string formata (YYYY-MM-DDThh:mm) çevirme
     const offset = finalDate.getTimezoneOffset()
@@ -475,6 +640,18 @@ async function handleSave() {
     return
   }
 
+  if (assignmentType.value === 'person' && !form.value.assignee) {
+    error.value = 'Kişiye atama seçildiğinde atanacak kişi seçilmelidir.'
+    showToast('Lütfen atanacak kişiyi seçin.', 'error')
+    return
+  }
+
+  if (assignmentType.value === 'team' && !form.value.team) {
+    error.value = 'Ekibe atama seçildiğinde atanacak ekip seçilmelidir.'
+    showToast('Lütfen atanacak ekibi seçin.', 'error')
+    return
+  }
+
   // 3. Her Bir Üretim Kaleminin Kendi Doğrulamaları
   for (let i = 0; i < form.value.product_lines.length; i++) {
     const pl = form.value.product_lines[i]
@@ -498,21 +675,28 @@ async function handleSave() {
       return
     }
 
-    // İş akışı adımları eklendiyse, ekip seçimlerinin dolu olup olmadığını kontrol et
-    if (pl.workflow_team_ids && pl.workflow_team_ids.length > 0) {
-      if (pl.workflow_team_ids.some(id => id === null)) {
-        error.value = `Eksik veri girdiniz: #${plNum} numaralı üretim kaleminin İş Akışı Rotasında seçilmemiş ekipler var.`
-        showToast('Lütfen tüm ekipleri seçin veya boş adımları silin.', 'error')
-        return
-      }
+    if (!pl.workflow_team_ids || pl.workflow_team_ids.length === 0) {
+      error.value = `Eksik veri girdiniz: #${plNum} numaralı üretim kalemi için en az 1 iş akışı ekibi seçilmelidir.`
+      showToast('Her üretim kalemine en az 1 görev alanı ekleyin.', 'error')
+      return
+    }
+
+    if (pl.workflow_team_ids.some(id => id === null)) {
+      error.value = `Eksik veri girdiniz: #${plNum} numaralı üretim kaleminin İş Akışı Rotasında seçilmemiş ekipler var.`
+      showToast('Lütfen tüm ekipleri seçin veya boş adımları silin.', 'error')
+      return
     }
   }
 
   saving.value = true
   try {
+    const assignee = assignmentType.value === 'person' ? form.value.assignee : null
+    const team = assignmentType.value === 'team' ? form.value.team : null
     const payload = {
       ...form.value,
       owner: auth.user.id,
+      assignee,
+      team,
       start_date: form.value.start_date || null,
       end_date: form.value.end_date || null,
       product_lines: form.value.product_lines.map(pl => {
@@ -561,6 +745,34 @@ async function confirmDelete() {
 <style scoped>
 .form-row { display: flex; gap: 16px; }
 .form-row .form-group { flex: 1; }
+
+.import-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: #f8fafc;
+}
+.import-actions-title {
+  font-weight: 800;
+  color: var(--text-primary);
+}
+.import-actions-text {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  margin-top: 2px;
+}
+
+.assignment-panel {
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: #f8fafc;
+}
 
 .section-divider {
   display: flex; align-items: center; justify-content: space-between;

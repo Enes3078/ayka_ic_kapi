@@ -2,8 +2,8 @@
   <div v-if="isLoginPage">
     <router-view />
   </div>
-  <div v-else class="app-layout">
-    <AppSidebar />
+  <div v-else class="app-layout" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+    <AppSidebar :collapsed="sidebarCollapsed" @toggle="toggleSidebar" />
     <div class="app-main">
       <AppHeader />
       <router-view />
@@ -22,13 +22,22 @@
 </template>
 
 <script setup>
-import { computed, ref, provide } from 'vue'
+import { computed, ref, provide, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import AppSidebar from './components/layout/AppSidebar.vue'
 import AppHeader from './components/layout/AppHeader.vue'
 
 const route = useRoute()
 const isLoginPage = computed(() => route.name === 'Login')
+const sidebarCollapsed = ref(false)
+
+onMounted(() => {
+  sidebarCollapsed.value = window.matchMedia('(max-width: 768px)').matches
+})
+
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+}
 
 // Global toast system
 const toasts = ref([])

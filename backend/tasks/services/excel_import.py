@@ -16,11 +16,37 @@ REQUIRED_HEADERS = {
 }
 
 OPTIONAL_HEADERS = {
+    'İŞ EMRİ İSMİ': 'work_order_name',
     'DURUMU': 'status',
     'ÖLÇÜ': 'dimension',
     'RENK': 'color',
     'BIÇAK DERİNLİĞİ': 'blade_depth',
 }
+
+
+def normalize_text(value):
+    text = str(value or '').strip().lower()
+    return (
+        text.replace('ı', 'i')
+        .replace('ğ', 'g')
+        .replace('ü', 'u')
+        .replace('ş', 's')
+        .replace('ö', 'o')
+        .replace('ç', 'c')
+    )
+
+
+def is_excluded_model(product_name, model_code):
+    searchable = f'{normalize_text(product_name)} {normalize_text(model_code)}'
+    excluded_terms = ['takim', 'sarf urunu', 'sarf']
+    return any(term in searchable for term in excluded_terms)
+
+
+def format_descriptions(*descriptions):
+    clean_descriptions = [str(item or '').strip() for item in descriptions if str(item or '').strip()]
+    if len(clean_descriptions) <= 1:
+        return clean_descriptions[0] if clean_descriptions else ''
+    return '\n'.join(f'{index}) {description}' for index, description in enumerate(clean_descriptions, start=1))
 
 
 def parse_excel_file(file_obj):
@@ -69,14 +95,24 @@ def parse_excel_file(file_obj):
             row_data[field_name] = row[col_idx] if col_idx < len(row) and row[col_idx] is not None else ''
 
         product_name = str(row_data.get('product_name', '')).strip()
+        work_order_name = str(row_data.get('work_order_name', '')).strip()
         quantity_raw = str(row_data.get('quantity', '')).strip()
         
+        if not work_order_name:
+            continue
+
         if not product_name and not quantity_raw:
             continue
 
         model_code = str(row_data.get('model_code', '')).strip()
         if not model_code:
             model_code = product_name or 'Bilinmeyen Model'
+
+        if is_excluded_model(product_name, model_code):
+            warnings.append(
+                f'Satır {row_idx}: Takım/sarf ürünü olduğu için içe aktarılmadı ({product_name or model_code}).'
+            )
+            continue
 
         try:
             quantity = max(1, int(float(quantity_raw or 1)))
@@ -91,7 +127,7 @@ def parse_excel_file(file_obj):
 
         desc1 = str(row_data.get('description_1', '')).strip()
         desc2 = str(row_data.get('description_2', '')).strip()
-        notes = ' | '.join(p for p in [desc1, desc2] if p)
+        notes = format_descriptions(desc1, desc2)
 
         # Regex ile Boyut (Ölçü) tespiti (Örn: 90x210, 100X200, 100*200, 1200 x 800, 90*197/18*45)
         dimension_match = re.search(r'(\d+[\s]*[xX\*/][\s]*\d+(?:[\s]*[xX\*/][\s]*\d+)*)', notes)
@@ -110,6 +146,7 @@ def parse_excel_file(file_obj):
             final_variant = ', '.join(extracted_color)
 
         product_lines.append({
+            'product_name': product_name,
             'model_code': model_code,
             'dimension': final_dim,
             'variant': final_variant,
@@ -142,7 +179,7 @@ def parse_excel_file(file_obj):
     product_name_title = str(rows[first_row_idx][pn_idx] or '').strip() if pn_idx is not None and len(rows) > first_row_idx else ''
     
     reference = f"{order_serial}-{order_sequence}".strip('-')
-    draft_title = f"{product_name_title} — {reference}" if product_name_title else f"Sipariş: {reference}" if reference else "Excel İçe Aktarma"
+    draft_title = reference or product_name_title or "Excel İçe Aktarma"
     wb.close()
 
     return {

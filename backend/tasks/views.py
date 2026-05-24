@@ -4,8 +4,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser
+from django.db import transaction
+from decimal import Decimal, InvalidOperation
 
-from .models import Task, ProductLine, Team
+from .models import Task, ProductLine, Team, WorkflowTemplate
 from .serializers import (
     TaskListSerializer,
     TaskDetailSerializer,
@@ -20,6 +22,56 @@ from accounts.permissions import IsAdminOrManager, IsAdminRole
 from .services.excel_import import parse_excel_file
 
 
+def parse_report_date(request):
+    from django.utils import timezone
+    import datetime
+
+    date_str = request.query_params.get('date')
+    if not date_str:
+        return timezone.localdate()
+    try:
+        return datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return timezone.localdate()
+
+
+def production_log_payload(log):
+    product_line = log.product_line
+    worker = log.worker
+    return {
+        'task_title': product_line.task.title,
+        'model_code': product_line.model_code,
+        'team': log.team.name,
+        'worker': worker.get_full_name() or worker.username if worker else '-',
+        'target_qty': product_line.quantity,
+        'produced_qty': log.qty_produced,
+        'scrap_qty': log.scrap_qty,
+        'working_hours': float(log.working_hours) if log.working_hours else 0,
+        'work_description': log.work_description,
+        'fire_reason': log.fire_reason,
+        'scrap_location': log.scrap_location,
+        'activity_notes': log.activity_notes,
+        'pvc_color': log.pvc_color,
+        'pvc_roll_size': log.pvc_roll_size,
+        'pvc_meters': float(log.pvc_meters) if log.pvc_meters else 0,
+        'pvc_cut_size': log.pvc_cut_size,
+        'giben_plate_size': log.giben_plate_size,
+        'report_date': log.report_date,
+        'created_at': log.created_at,
+        'completed_at': log.created_at,
+    }
+
+
+def parse_decimal_quantity(value):
+    if value is None or value == '':
+        return None
+    try:
+        quantity = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    return quantity if quantity > 0 else None
+
+
 class TeamViewSet(viewsets.ModelViewSet):
     """Ekip CRUD — /api/tasks/teams/"""
     queryset = Team.objects.all()
@@ -29,6 +81,30 @@ class TeamViewSet(viewsets.ModelViewSet):
         if self.action in ('list', 'retrieve'):
             return [IsAuthenticated()]
         return [IsAdminOrManager()]
+
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        team = self.get_object()
+        team_id = team.id
+
+        for template in WorkflowTemplate.objects.all():
+            if team_id in (template.steps or []):
+                template.steps = [step for step in template.steps if step != team_id]
+                template.save(update_fields=['steps'])
+
+        for line in ProductLine.objects.all():
+            old_team_ids = line.workflow_team_ids or []
+            if team_id not in old_team_ids:
+                continue
+            line.workflow_team_ids = [item for item in old_team_ids if item != team_id]
+            if line.active_product_index >= len(line.workflow_team_ids):
+                line.active_product_index = max(0, len(line.workflow_team_ids) - 1)
+            if isinstance(line.workflow_stage_targets, dict):
+                line.workflow_stage_targets.pop(str(team_id), None)
+                line.workflow_stage_targets.pop(team_id, None)
+            line.save(update_fields=['workflow_team_ids', 'workflow_stage_targets', 'active_product_index'])
+
+        return super().destroy(request, *args, **kwargs)
 
 
 class ProductViewSet(viewsets.ModelViewSet):
@@ -104,6 +180,11 @@ class TaskViewSet(viewsets.ModelViewSet):
                 {'detail': f'Geçersiz durum: {new_status}'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if new_status == Task.Status.DONE and task.product_lines.filter(stage_done=False).exists():
+            return Response(
+                {'detail': 'Tüm üretim kalemleri tamamlanmadan görev tamamlandı yapılamaz.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         task.status = new_status
         task.save()
         return Response(TaskDetailSerializer(task).data)
@@ -148,21 +229,21 @@ class ProductLineViewSet(viewsets.ModelViewSet):
         POST /api/tasks/product-lines/{id}/log-production/
         Üretim miktarını artırır, fire kaydeder, gerekirse bir sonraki ekibe devreder (Handover).
         """
-        product_line = self.get_object()
         serializer = ProductLineLogProductionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         from django.utils import timezone
-        from .models import ProductLineHistory
+        from .models import ProductLineHistory, ProductLineProductionLog
 
         qty = serializer.validated_data['qty_produced']
         scrap = serializer.validated_data['fire_qty']
         reason = serializer.validated_data.get('fire_reason', '')
-        is_handover = serializer.validated_data.get('handover', False)
+        requested_handover = serializer.validated_data.get('handover', False)
         
         used_stock_item_id = serializer.validated_data.get('used_stock_item_id')
         used_stock_quantity = serializer.validated_data.get('used_stock_quantity')
         used_stocks = serializer.validated_data.get('used_stocks', [])
+        consume_stock = serializer.validated_data.get('consume_stock', True)
 
         from stock.models import StockTransaction
         from django.core.exceptions import ValidationError as DjangoValidationError
@@ -173,92 +254,127 @@ class ProductLineViewSet(viewsets.ModelViewSet):
         if used_stock_item_id and used_stock_quantity:
             used_stocks.append({'item_id': used_stock_item_id, 'quantity': used_stock_quantity})
 
-        # Çoklu stok düşümü
-        for stock_usage in used_stocks:
-            item_id = stock_usage.get('item_id')
-            sqty = stock_usage.get('quantity')
-            if item_id and sqty:
-                try:
-                    StockTransaction.create_exit(
-                        stock_item_id=item_id,
-                        quantity=sqty,
-                        user=request.user,
-                        notes=f"Otomatik Üretim Tüketimi ({qty} adet üretim için)",
-                        usage_location=f"Görev: {product_line.task.title} - Model: {product_line.model_code}"
-                    )
-                except Exception as e:
-                    if isinstance(e, DjangoValidationError):
-                        msg = e.message if hasattr(e, 'message') else str(e)
-                        return Response({'detail': f'Stok düşülemedi: {msg}'}, status=status.HTTP_400_BAD_REQUEST)
-                    return Response({'detail': f'Stok işlem hatası: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            product_line = ProductLine.objects.select_for_update().get(pk=pk)
 
-        # Miktarları ekle
-        product_line.qty_produced += qty
-        product_line.fire_qty += scrap
-        if reason and not product_line.fire_reason:
-            product_line.fire_reason = reason
-        elif reason:
-            product_line.fire_reason += f" | {reason}"
+            # History log oluştur/güncelle
+            current_team_id = product_line.current_team_id
+            if current_team_id:
+                team = Team.objects.get(id=current_team_id)
+                history, created = ProductLineHistory.objects.get_or_create(
+                    product_line=product_line,
+                    team=team,
+                    completed_at__isnull=True,
+                    defaults={'worker': request.user}
+                )
 
-        # History log oluştur/güncelle
-        current_team_id = product_line.current_team_id
-        if current_team_id:
-            team = Team.objects.get(id=current_team_id)
-            history, created = ProductLineHistory.objects.get_or_create(
-                product_line=product_line,
-                team=team,
-                completed_at__isnull=True,
-                defaults={'worker': request.user}
-            )
-            
-            if created and report_date:
-                from datetime import datetime, time
-                history.started_at = timezone.make_aware(datetime.combine(report_date, time(17, 0)))
-
-            history.qty_produced_at_stage += qty
-            history.scrap_qty_at_stage += scrap
-            
-            if is_handover:
-                if report_date:
+                if created and report_date:
                     from datetime import datetime, time
-                    history.completed_at = timezone.make_aware(datetime.combine(report_date, time(17, 30)))
-                else:
-                    history.completed_at = timezone.now()
-                # Sonraki aşamaya geç
-                product_line.active_product_index += 1
-                if product_line.active_product_index >= len(product_line.workflow_team_ids):
+                    history.started_at = timezone.make_aware(datetime.combine(report_date, time(17, 0)))
+
+                stage_input = product_line.get_stage_input_quantity()
+                remaining_before = max(0, stage_input - history.qty_produced_at_stage)
+
+                if qty > remaining_before:
+                    return Response(
+                        {'detail': f'Bu aşamada en fazla {remaining_before} adet işlenebilir. Gelen miktar {stage_input} adettir.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if history.scrap_qty_at_stage + scrap > history.qty_produced_at_stage + qty:
+                    return Response(
+                        {'detail': 'Fire miktarı, bu aşamada işlenen toplam miktardan fazla olamaz.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                if consume_stock:
+                    for stock_usage in used_stocks:
+                        item_id = stock_usage.get('item_id')
+                        sqty = parse_decimal_quantity(stock_usage.get('quantity'))
+                        if item_id and sqty:
+                            try:
+                                StockTransaction.create_exit(
+                                    stock_item_id=item_id,
+                                    quantity=sqty,
+                                    user=request.user,
+                                    notes=f"Otomatik Üretim Tüketimi ({qty} adet işlem için)",
+                                    usage_location=f"Görev: {product_line.task.title} - Model: {product_line.model_code}"
+                                )
+                            except Exception as e:
+                                if isinstance(e, DjangoValidationError):
+                                    msg = e.message if hasattr(e, 'message') else str(e)
+                                    return Response({'detail': f'Stok düşülemedi: {msg}'}, status=status.HTTP_400_BAD_REQUEST)
+                                return Response({'detail': f'Stok işlem hatası: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+                history.qty_produced_at_stage += qty
+                history.scrap_qty_at_stage += scrap
+
+                is_handover = stage_input > 0 and history.qty_produced_at_stage >= stage_input
+
+                if is_handover:
+                    if report_date:
+                        from datetime import datetime, time
+                        history.completed_at = timezone.make_aware(datetime.combine(report_date, time(17, 30)))
+                    else:
+                        history.completed_at = timezone.now()
+                    # Sonraki aşamaya geç
+                    product_line.active_product_index += 1
+                    if product_line.active_product_index >= len(product_line.workflow_team_ids):
+                        product_line.stage_done = True
+                        product_line.pending_approval = True
+
+                # CNC vb. Ekstra Rapor Alanlarını Kaydet
+                if serializer.validated_data.get('working_hours'):
+                    history.working_hours = serializer.validated_data['working_hours']
+                if serializer.validated_data.get('work_description'):
+                    history.work_description = serializer.validated_data['work_description']
+                if serializer.validated_data.get('scrap_location'):
+                    history.scrap_location = serializer.validated_data['scrap_location']
+                if serializer.validated_data.get('activity_notes'):
+                    history.activity_notes = serializer.validated_data['activity_notes']
+
+                # PVC ve Giben
+                if serializer.validated_data.get('pvc_color'):
+                    history.pvc_color = serializer.validated_data['pvc_color']
+                if serializer.validated_data.get('pvc_roll_size'):
+                    history.pvc_roll_size = serializer.validated_data['pvc_roll_size']
+                if serializer.validated_data.get('pvc_meters'):
+                    history.pvc_meters = serializer.validated_data['pvc_meters']
+                if serializer.validated_data.get('pvc_cut_size'):
+                    history.pvc_cut_size = serializer.validated_data['pvc_cut_size']
+                if serializer.validated_data.get('giben_plate_size'):
+                    history.giben_plate_size = serializer.validated_data['giben_plate_size']
+
+                history.save()
+                ProductLineProductionLog.objects.create(
+                    product_line=product_line,
+                    team=team,
+                    worker=request.user,
+                    report_date=report_date or timezone.localdate(),
+                    qty_produced=qty,
+                    scrap_qty=scrap,
+                    working_hours=serializer.validated_data.get('working_hours'),
+                    work_description=serializer.validated_data.get('work_description', ''),
+                    fire_reason=reason,
+                    scrap_location=serializer.validated_data.get('scrap_location', ''),
+                    activity_notes=serializer.validated_data.get('activity_notes', ''),
+                    pvc_color=serializer.validated_data.get('pvc_color', ''),
+                    pvc_roll_size=serializer.validated_data.get('pvc_roll_size', ''),
+                    pvc_meters=serializer.validated_data.get('pvc_meters'),
+                    pvc_cut_size=serializer.validated_data.get('pvc_cut_size', ''),
+                    giben_plate_size=serializer.validated_data.get('giben_plate_size', ''),
+                )
+            else:
+                if requested_handover:
                     product_line.stage_done = True
                     product_line.pending_approval = True
-            
-            # CNC vb. Ekstra Rapor Alanlarını Kaydet
-            if serializer.validated_data.get('working_hours'):
-                history.working_hours = serializer.validated_data['working_hours']
-            if serializer.validated_data.get('work_description'):
-                history.work_description = serializer.validated_data['work_description']
-            if serializer.validated_data.get('scrap_location'):
-                history.scrap_location = serializer.validated_data['scrap_location']
-            if serializer.validated_data.get('activity_notes'):
-                history.activity_notes = serializer.validated_data['activity_notes']
-                
-            # PVC ve Giben
-            if serializer.validated_data.get('pvc_color'):
-                history.pvc_color = serializer.validated_data['pvc_color']
-            if serializer.validated_data.get('pvc_roll_size'):
-                history.pvc_roll_size = serializer.validated_data['pvc_roll_size']
-            if serializer.validated_data.get('pvc_meters'):
-                history.pvc_meters = serializer.validated_data['pvc_meters']
-            if serializer.validated_data.get('pvc_cut_size'):
-                history.pvc_cut_size = serializer.validated_data['pvc_cut_size']
-            if serializer.validated_data.get('giben_plate_size'):
-                history.giben_plate_size = serializer.validated_data['giben_plate_size']
-                
-            history.save()
-        else:
-            if is_handover:
-                product_line.stage_done = True
-                product_line.pending_approval = True
 
-        product_line.save()
+            if reason and not product_line.fire_reason:
+                product_line.fire_reason = reason
+            elif reason:
+                product_line.fire_reason += f" | {reason}"
+
+            product_line.sync_totals_from_histories()
+            product_line.save()
         return Response(ProductLineSerializer(product_line).data)
 
 
@@ -321,16 +437,11 @@ class MyTeamQueueView(APIView):
                     'task_due_date': task.due_date.isoformat() if task.due_date else None,
                     'product_lines': [],
                 }
-            # Kalan miktar ve dinamik Miktar hesaplaması (Kanat/Panel x2 Sadece CNC, Giben, Laminasyon, Kanat için)
-            displayed_quantity = line.quantity
-            item_name = (line.model_code or "").lower()
-            if "kanat" in item_name or "panel" in item_name:
-                user_dept = (user.department or "").lower()
-                target_teams = ["cnc", "giben", "laminasyon", "kanat"]
-                if any(t in user_dept for t in target_teams):
-                    displayed_quantity = line.quantity * 2
-
-            remaining = max(0, displayed_quantity - line.qty_produced)
+            stage_index = line.active_product_index + 1 if getattr(line, 'is_upcoming_for_me', False) else line.active_product_index
+            displayed_quantity = line.get_stage_input_quantity(stage_index)
+            stage_processed = line.get_stage_processed_quantity(stage_index)
+            stage_scrap = line.get_stage_scrap_quantity(stage_index)
+            remaining = line.get_stage_remaining_quantity(stage_index)
             task_map[task.id]['product_lines'].append({
                 'id': line.id,
                 'model_code': line.model_code,
@@ -342,10 +453,10 @@ class MyTeamQueueView(APIView):
                 'image_base64': line.image_base64,
                 'unit_type': line.unit_type,
                 'quantity': displayed_quantity,
-                'qty_produced': line.qty_produced,
+                'qty_produced': stage_processed,
                 'remaining': remaining,
-                'fire_qty': line.fire_qty,
-                'completion_rate': line.completion_rate,
+                'fire_qty': stage_scrap,
+                'completion_rate': line.get_stage_completion_rate(stage_index),
                 'workflow_team_ids': line.workflow_team_ids,
                 'active_product_index': line.active_product_index,
                 'stage_done': line.stage_done,
@@ -360,7 +471,7 @@ class MyTeamQueueView(APIView):
             if lines:
                 total_target = sum(pl['quantity'] for pl in lines)
                 total_produced = sum(pl['qty_produced'] for pl in lines)
-                task_data['total_progress'] = round((total_produced / total_target) * 100, 1) if total_target > 0 else 0
+                task_data['total_progress'] = min(100, round((total_produced / total_target) * 100, 1)) if total_target > 0 else 0
                 task_data['total_items'] = len(lines)
                 task_data['total_remaining'] = sum(pl['remaining'] for pl in lines)
             result.append(task_data)
@@ -417,20 +528,17 @@ class WorkerTrackingView(APIView):
         from django.utils import timezone
 
         # Aktif çalışanları al
-        workers = CustomUser.objects.filter(is_active=True).values(
-            'id', 'username', 'first_name', 'last_name',
-            'role', 'department',
-        )
+        workers = CustomUser.objects.filter(is_active=True).prefetch_related('teams')
 
         result = []
         for w in workers:
-            name = f"{w['first_name'] or ''} {w['last_name'] or ''}".strip()
+            name = f"{w.first_name or ''} {w.last_name or ''}".strip()
             if not name:
-                name = w['username']
+                name = w.username
 
             # İşçinin son aktiviteleri
             histories = ProductLineHistory.objects.filter(
-                worker_id=w['id']
+                worker_id=w.id
             ).select_related('product_line', 'team').order_by('-started_at')
 
             active_task_count = histories.filter(completed_at__isnull=True).count()
@@ -450,12 +558,16 @@ class WorkerTrackingView(APIView):
                 diff = timezone.now() - last_handover_qs.completed_at
                 is_recent_handover = diff.total_seconds() < 3600
 
+            assigned_team_names = list(w.teams.values_list('name', flat=True))
+            department_label = w.department or (', '.join(assigned_team_names) if assigned_team_names else '—')
+
             result.append({
-                'id': w['id'],
+                'id': w.id,
                 'name': name,
-                'username': w['username'],
-                'role': w['role'],
-                'department': w['department'] or '—',
+                'username': w.username,
+                'role': w.role,
+                'department': department_label,
+                'assigned_team_names': assigned_team_names,
                 'active_task_count': active_task_count,
                 'last_activity': last_activity,
                 'last_handover': handover_info,
@@ -499,7 +611,7 @@ class WorkerDetailAPIView(APIView):
         import calendar
 
         try:
-            worker = CustomUser.objects.get(id=pk)
+            worker = CustomUser.objects.prefetch_related('teams').get(id=pk)
         except CustomUser.DoesNotExist:
             return Response({'detail': 'Çalışan bulunamadı'}, status=404)
 
@@ -518,10 +630,7 @@ class WorkerDetailAPIView(APIView):
         # 12 Aylık Analiz (Tamamlanmış iş sayısı / Ay)
         monthly_labels = []
         monthly_data = []
-        current_month = today.replace(day=1)
         for i in range(11, -1, -1):
-            m = current_month - timedelta(days=30*i) # Approximate, exact month sub is complex but this works for labels
-            # Let's do a better exact month approach
             month_idx = (today.month - 1 - i) % 12 + 1
             year_idx = today.year + ((today.month - 1 - i) // 12)
             monthly_labels.append(f"{calendar.month_abbr[month_idx]} {year_idx}")
@@ -555,9 +664,12 @@ class WorkerDetailAPIView(APIView):
                 'completed_at': ch.completed_at,
             })
 
+        assigned_team_names = list(worker.teams.values_list('name', flat=True))
+
         return Response({
             'worker_name': worker.get_full_name() or worker.username,
-            'department': worker.department,
+            'department': worker.department or ', '.join(assigned_team_names),
+            'assigned_team_names': assigned_team_names,
             'daily_chart': {'labels': daily_labels, 'data': daily_data},
             'monthly_chart': {'labels': monthly_labels, 'data': monthly_data},
             'active_tasks': active_tasks,
@@ -573,11 +685,9 @@ class TaskReportView(APIView):
     permission_classes = [IsAdminOrManager]
 
     def get(self, request):
-        from .models import Task, ProductLineHistory
-        from django.db.models import Sum, F, ExpressionWrapper, fields
-        from django.utils import timezone
+        from .models import Task
         
-        qs = Task.objects.prefetch_related('product_lines', 'product_lines__histories').all()
+        qs = Task.objects.prefetch_related('product_lines', 'product_lines__histories', 'product_lines__production_logs').all()
         
         # Filtreler
         year = request.query_params.get('year')
@@ -604,10 +714,14 @@ class TaskReportView(APIView):
         for task in qs:
             actual_hours = 0
             for pl in task.product_lines.all():
-                for history in pl.histories.all():
-                    if history.completed_at and history.started_at:
-                        diff = (history.completed_at - history.started_at).total_seconds()
-                        actual_hours += diff / 3600.0
+                log_hours = sum(float(log.working_hours or 0) for log in pl.production_logs.all())
+                if log_hours:
+                    actual_hours += log_hours
+                else:
+                    for history in pl.histories.all():
+                        if history.completed_at and history.started_at:
+                            diff = (history.completed_at - history.started_at).total_seconds()
+                            actual_hours += diff / 3600.0
 
             tasks_data.append({
                 'id': task.id,
@@ -640,58 +754,41 @@ class ProductionReportView(APIView):
     permission_classes = [IsAdminOrManager]
 
     def get(self, request):
-        from .models import ProductLineHistory
-        from django.utils import timezone
-        import datetime
+        from .models import ProductLineProductionLog
 
-        date_str = request.query_params.get('date')
-        if not date_str:
-            target_date = timezone.now().date()
-        else:
-            try:
-                target_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
-            except ValueError:
-                target_date = timezone.now().date()
-
-        # O gün başlayan veya biten history'ler
-        qs = ProductLineHistory.objects.filter(
-            started_at__date__lte=target_date
-        ).exclude(
-            completed_at__date__lt=target_date
+        target_date = parse_report_date(request)
+        qs = ProductLineProductionLog.objects.filter(
+            report_date=target_date
         ).select_related('product_line', 'product_line__task', 'team', 'worker')
 
         # Filtreleyelim
         logs = []
         team_stats = {}
         total_logs = 0
-        total_produced = 0
+        total_processed = 0
+        total_good_output = 0
+        total_scrap = 0
 
-        for h in qs:
-            if h.qty_produced_at_stage > 0:
-                team_name = h.team.name
-                qty = h.qty_produced_at_stage
+        for log in qs:
+            if log.qty_produced > 0 or log.scrap_qty > 0:
+                team_name = log.team.name
+                qty = log.qty_produced
                 
                 total_logs += 1
-                total_produced += qty
+                total_processed += qty
+                total_scrap += log.scrap_qty
                 team_stats[team_name] = team_stats.get(team_name, 0) + qty
+                total_good_output += max(0, qty - log.scrap_qty)
 
-                logs.append({
-                    'task_title': h.product_line.task.title,
-                    'model_code': h.product_line.model_code,
-                    'team': team_name,
-                    'worker': h.worker.get_full_name() or h.worker.username if h.worker else '-',
-                    'target_qty': h.product_line.quantity,
-                    'produced_qty': qty,
-                    'scrap_qty': h.scrap_qty_at_stage,
-                    'started_at': h.started_at,
-                    'completed_at': h.completed_at,
-                })
+                logs.append(production_log_payload(log))
 
         return Response({
             'aggregate': {
                 'target_date': target_date.strftime('%Y-%m-%d'),
                 'total_logs': total_logs,
-                'total_produced': total_produced,
+                'total_produced': total_good_output,
+                'total_processed': total_processed,
+                'total_scrap': total_scrap,
                 'team_stats': [{'team': k, 'qty': v} for k, v in team_stats.items()],
             },
             'logs': logs
@@ -705,47 +802,17 @@ class CncReportView(APIView):
     permission_classes = [IsAdminOrManager]
 
     def get(self, request):
-        from .models import ProductLineHistory
-        from django.utils import timezone
-        import datetime
+        from .models import ProductLineProductionLog
 
-        date_str = request.query_params.get('date')
-        if not date_str:
-            target_date = timezone.now().date()
-        else:
-            try:
-                target_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
-            except ValueError:
-                target_date = timezone.now().date()
-
-        # CNC ekibi tarafından yapılan ve tamamlanmış veya o gün başlanmış kayıtlar
-        # Filtre: Ekip adında CNC geçmeli ve ek bilgilerden en az biri dolu olmalı
-        from django.db.models import Q
-        qs = ProductLineHistory.objects.filter(
+        target_date = parse_report_date(request)
+        qs = ProductLineProductionLog.objects.filter(
             team__name__icontains='CNC',
-            started_at__date__lte=target_date
-        ).exclude(
-            completed_at__date__lt=target_date
-        ).filter(
-            Q(working_hours__isnull=False) | 
-            ~Q(work_description='') | 
-            ~Q(activity_notes='')
-        ).select_related('product_line', 'product_line__task', 'worker')
+            report_date=target_date,
+        ).select_related('product_line', 'product_line__task', 'team', 'worker')
 
         logs = []
-        for h in qs:
-            logs.append({
-                'task_title': h.product_line.task.title,
-                'model_code': h.product_line.model_code,
-                'worker': h.worker.get_full_name() or h.worker.username if h.worker else '-',
-                'working_hours': float(h.working_hours) if h.working_hours else 0,
-                'work_description': h.work_description,
-                'produced_qty': h.qty_produced_at_stage,
-                'scrap_qty': h.scrap_qty_at_stage,
-                'scrap_location': h.scrap_location,
-                'activity_notes': h.activity_notes,
-                'completed_at': h.completed_at,
-            })
+        for log in qs:
+            logs.append(production_log_payload(log))
 
         return Response({
             'target_date': target_date.strftime('%Y-%m-%d'),
@@ -760,47 +827,17 @@ class PvcReportView(APIView):
     permission_classes = [IsAdminOrManager]
 
     def get(self, request):
-        from .models import ProductLineHistory
-        from django.utils import timezone
-        import datetime
+        from .models import ProductLineProductionLog
 
-        date_str = request.query_params.get('date')
-        if not date_str:
-            target_date = timezone.now().date()
-        else:
-            try:
-                target_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
-            except ValueError:
-                target_date = timezone.now().date()
-
-        from django.db.models import Q
-        qs = ProductLineHistory.objects.filter(
+        target_date = parse_report_date(request)
+        qs = ProductLineProductionLog.objects.filter(
             team__name__icontains='PVC',
-            started_at__date__lte=target_date
-        ).exclude(
-            completed_at__date__lt=target_date
-        ).filter(
-            ~Q(pvc_color='') | 
-            ~Q(pvc_roll_size='') | 
-            Q(pvc_meters__isnull=False) |
-            ~Q(pvc_cut_size='')
-        ).select_related('product_line', 'product_line__task', 'worker')
+            report_date=target_date,
+        ).select_related('product_line', 'product_line__task', 'team', 'worker')
 
         logs = []
-        for h in qs:
-            logs.append({
-                'task_title': h.product_line.task.title,
-                'model_code': h.product_line.model_code,
-                'worker': h.worker.get_full_name() or h.worker.username if h.worker else '-',
-                'pvc_color': h.pvc_color,
-                'pvc_roll_size': h.pvc_roll_size,
-                'pvc_meters': float(h.pvc_meters) if h.pvc_meters else 0,
-                'pvc_cut_size': h.pvc_cut_size,
-                'produced_qty': h.qty_produced_at_stage,
-                'scrap_qty': h.scrap_qty_at_stage,
-                'activity_notes': h.activity_notes,
-                'completed_at': h.completed_at,
-            })
+        for log in qs:
+            logs.append(production_log_payload(log))
 
         return Response({
             'target_date': target_date.strftime('%Y-%m-%d'),
@@ -815,42 +852,17 @@ class GibenReportView(APIView):
     permission_classes = [IsAdminOrManager]
 
     def get(self, request):
-        from .models import ProductLineHistory
-        from django.utils import timezone
-        import datetime
+        from .models import ProductLineProductionLog
 
-        date_str = request.query_params.get('date')
-        if not date_str:
-            target_date = timezone.now().date()
-        else:
-            try:
-                target_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
-            except ValueError:
-                target_date = timezone.now().date()
-
-        from django.db.models import Q
-        qs = ProductLineHistory.objects.filter(
+        target_date = parse_report_date(request)
+        qs = ProductLineProductionLog.objects.filter(
             team__name__icontains='GIBEN',
-            started_at__date__lte=target_date
-        ).exclude(
-            completed_at__date__lt=target_date
-        ).filter(
-            ~Q(giben_plate_size='') | 
-            ~Q(work_description='')
-        ).select_related('product_line', 'product_line__task', 'worker')
+            report_date=target_date,
+        ).select_related('product_line', 'product_line__task', 'team', 'worker')
 
         logs = []
-        for h in qs:
-            logs.append({
-                'task_title': h.product_line.task.title,
-                'model_code': h.product_line.model_code,
-                'worker': h.worker.get_full_name() or h.worker.username if h.worker else '-',
-                'work_description': h.work_description,
-                'giben_plate_size': h.giben_plate_size,
-                'produced_qty': h.qty_produced_at_stage,
-                'activity_notes': h.activity_notes,
-                'completed_at': h.completed_at,
-            })
+        for log in qs:
+            logs.append(production_log_payload(log))
 
         return Response({
             'target_date': target_date.strftime('%Y-%m-%d'),
@@ -866,66 +878,22 @@ class TeamReportView(APIView):
     permission_classes = [IsAdminOrManager]
 
     def get(self, request):
-        from .models import ProductLineHistory
-        from django.utils import timezone
-        import datetime
-        from django.db.models import Q
+        from .models import ProductLineProductionLog
 
-        date_str = request.query_params.get('date')
         team_id = request.query_params.get('team_id')
-
-        if not date_str:
-            target_date = timezone.now().date()
-        else:
-            try:
-                target_date = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
-            except ValueError:
-                target_date = timezone.now().date()
+        target_date = parse_report_date(request)
 
         if not team_id:
             return Response({"detail": "team_id parametresi zorunludur."}, status=400)
 
-        # Filter logs for selected team and target date
-        qs = ProductLineHistory.objects.filter(
+        qs = ProductLineProductionLog.objects.filter(
             team_id=team_id,
-            started_at__date__lte=target_date
-        ).exclude(
-            completed_at__date__lt=target_date
-        ).filter(
-            Q(working_hours__isnull=False) |
-            ~Q(work_description='') |
-            ~Q(activity_notes='') |
-            ~Q(pvc_color='') |
-            ~Q(pvc_roll_size='') |
-            Q(pvc_meters__isnull=False) |
-            ~Q(pvc_cut_size='') |
-            ~Q(giben_plate_size='')
+            report_date=target_date,
         ).select_related('product_line', 'product_line__task', 'worker', 'team')
 
         logs = []
-        for h in qs:
-            logs.append({
-                'task_title': h.product_line.task.title,
-                'model_code': h.product_line.model_code,
-                'worker': h.worker.get_full_name() or h.worker.username if h.worker else '-',
-                'working_hours': float(h.working_hours) if h.working_hours else 0,
-                'work_description': h.work_description,
-                'scrap_location': h.scrap_location,
-                'activity_notes': h.activity_notes,
-                'produced_qty': h.qty_produced_at_stage,
-                'scrap_qty': h.scrap_qty_at_stage,
-                
-                # PVC specific
-                'pvc_color': h.pvc_color,
-                'pvc_roll_size': h.pvc_roll_size,
-                'pvc_meters': float(h.pvc_meters) if h.pvc_meters else 0,
-                'pvc_cut_size': h.pvc_cut_size,
-
-                # Giben specific
-                'giben_plate_size': h.giben_plate_size,
-                
-                'completed_at': h.completed_at.strftime('%Y-%m-%d %H:%M:%S') if h.completed_at else None,
-            })
+        for log in qs:
+            logs.append(production_log_payload(log))
 
         return Response({
             'target_date': target_date.strftime('%Y-%m-%d'),
@@ -956,4 +924,3 @@ class SystemSettingsView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=400)
-

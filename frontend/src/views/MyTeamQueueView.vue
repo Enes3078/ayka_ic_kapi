@@ -1,11 +1,14 @@
 <template>
   <div class="page-content">
-    <div class="page-header">
-      <h2 class="page-title">{{ selectedTask ? '← ' + selectedTask.task_title : 'Görevlerim' }}</h2>
-      <div class="flex gap-12">
+    <div class="page-header worker-page-header">
+      <div>
+        <h2 class="page-title">{{ selectedTask ? selectedTask.task_title : 'Görevlerim' }}</h2>
+        <p class="worker-page-subtitle">{{ selectedTask ? 'Kalemleri kontrol edin ve gün sonu raporunu doldurun.' : 'Ekibinize atanmış aktif işler' }}</p>
+      </div>
+      <div class="worker-actions">
         <button v-if="selectedTask" class="btn btn-secondary" @click="selectedTask = null">← Görev Listesine Dön</button>
         <button class="btn btn-secondary" @click="fetchQueue">🔄 Yenile</button>
-        <button class="btn btn-primary" style="font-size: 1.1rem; padding: 10px 20px;" @click="openBulkReportModal">🌅 Gün Sonu Raporu Doldur</button>
+        <button class="btn btn-primary worker-primary-action" @click="openBulkReportModal">🌅 Gün Sonu Raporu Doldur</button>
       </div>
     </div>
 
@@ -39,35 +42,38 @@
 
     <!-- ═══════════ GÖREV DETAY (KALEMLER) ═══════════ -->
     <div v-else>
-      <div class="card mb-16" style="border-left:4px solid var(--primary-color);">
-        <div class="flex justify-between items-center">
+      <div class="card mb-16 queue-summary">
+        <div class="queue-summary-content">
           <div>
-            <div class="text-sm text-muted">Görev Sahibi: {{ selectedTask.task_owner }}</div>
-            <div class="text-sm text-muted mt-4" v-if="selectedTask.task_description">{{ selectedTask.task_description }}</div>
+            <div class="summary-kicker">Görev Sahibi</div>
+            <div class="summary-owner">{{ selectedTask.task_owner }}</div>
+            <div class="summary-description" v-if="selectedTask.task_description">{{ selectedTask.task_description }}</div>
           </div>
-          <div class="text-right">
-            <div class="text-sm">Toplam İlerleme</div>
-            <div style="font-size:1.4rem;font-weight:800;color:var(--primary-color);">{{ selectedTask.total_progress }}%</div>
+          <div class="summary-progress">
+            <div class="summary-kicker">Toplam İlerleme</div>
+            <div>{{ selectedTask.total_progress }}%</div>
           </div>
         </div>
       </div>
 
       <div class="grid grid-cols-1 gap-16">
-        <div v-for="pl in selectedTask.product_lines" :key="pl.id" class="card" style="border-top:3px solid var(--accent-blue);">
-          <img v-if="pl.image_base64" :src="pl.image_base64" alt="Ürün" style="width:100%;height:140px;object-fit:cover;border-radius:4px;margin-bottom:12px;border:1px solid var(--border-color);" />
-          <div class="flex justify-between items-start mb-8">
-            <h3 style="font-size:1.05rem;font-weight:700;">{{ pl.model_code }}</h3>
-            <span class="badge badge-high">Hedef: {{ pl.quantity }} {{ pl.unit_type }}</span>
+        <div v-for="pl in selectedTask.product_lines" :key="pl.id" class="card worker-line-card">
+          <img v-if="pl.image_base64" :src="pl.image_base64" alt="Ürün" class="line-image" />
+          <div class="line-header">
+            <div>
+              <h3 class="line-title">{{ pl.model_code }}</h3>
+              <div v-if="pl.variant || pl.dimension || pl.color" class="line-meta">
+                <span v-if="pl.variant">Varyant: {{ pl.variant }}</span>
+                <span v-if="pl.color">Renk: {{ pl.color }}</span>
+                <span v-if="pl.dimension">Ölçü: {{ pl.dimension }}</span>
+              </div>
+            </div>
+            <span class="line-target">Hedef: {{ pl.quantity }} {{ pl.unit_type }}</span>
           </div>
-          <div v-if="pl.variant || pl.dimension || pl.color" class="text-sm text-muted mb-8">
-            <span v-if="pl.variant">Varyant: {{ pl.variant }} | </span>
-            <span v-if="pl.color">Renk: {{ pl.color }} | </span>
-            <span v-if="pl.dimension">Ölçü: {{ pl.dimension }}</span>
-          </div>
-          <div v-if="pl.brief_intro" class="text-sm mb-12 p-8 rounded" style="background:var(--bg-input);border-left:3px solid var(--accent-blue);">{{ pl.brief_intro }}</div>
+          <div v-if="pl.brief_intro" class="line-note">{{ pl.brief_intro }}</div>
 
           <div class="stats-row mb-12">
-            <div class="stat-item stat-green"><span class="stat-label">Üretilen</span><span class="stat-value">{{ pl.qty_produced }}</span></div>
+            <div class="stat-item stat-green"><span class="stat-label">İşlenen</span><span class="stat-value">{{ pl.qty_produced }}</span></div>
             <div class="stat-item stat-orange"><span class="stat-label">Kalan</span><span class="stat-value">{{ pl.remaining }}</span></div>
             <div class="stat-item stat-red"><span class="stat-label">Fire</span><span class="stat-value">{{ pl.fire_qty }}</span></div>
           </div>
@@ -103,17 +109,16 @@
                     <th class="p-12 text-sm font-bold text-slate-600 border-b">Görev & Kalem</th>
                     <th class="p-12 text-sm font-bold text-slate-600 border-b w-24">Hedef</th>
                     <th class="p-12 text-sm font-bold text-slate-600 border-b w-24">Kalan</th>
-                    <th v-if="!canFillPvcReport" class="p-12 text-sm font-bold text-slate-600 border-b w-32">Üretilen</th>
+                    <th v-if="!canFillPvcReport" class="p-12 text-sm font-bold text-slate-600 border-b w-32">İşlenen</th>
                     <th v-else class="p-12 text-sm font-bold text-slate-600 border-b w-32 text-center">İşlem</th>
                     <th class="p-12 text-sm font-bold text-slate-600 border-b w-32">Fire</th>
-                    <th class="p-12 text-sm font-bold text-slate-600 border-b text-center w-24">Devret</th>
                   </tr>
                 </thead>
                 <tbody>
                   <template v-for="t in tasks" :key="'t-'+t.task_id">
                     <!-- Görev Başlığı Satırı -->
                     <tr class="bg-slate-100/50">
-                      <td colspan="6" class="p-12 font-bold text-sm" style="color: var(--accent-blue); border-bottom: 1px solid var(--border-color);">
+                      <td colspan="5" class="p-12 font-bold text-sm" style="color: var(--accent-blue); border-bottom: 1px solid var(--border-color);">
                         📁 {{ t.task_title }}
                       </td>
                     </tr>
@@ -132,7 +137,7 @@
                         <td class="p-12 font-bold text-slate-600">{{ pl.quantity }} {{ pl.unit_type }}</td>
                         <td class="p-12 font-bold text-orange-600">{{ pl.remaining }}</td>
                         <td v-if="!canFillPvcReport" class="p-12">
-                          <input v-model.number="bulkData[pl.id].qty_produced" type="number" min="0" class="form-input text-center" style="width: 80px;" placeholder="0" :disabled="pl.is_upcoming" />
+                          <input v-model.number="bulkData[pl.id].qty_produced" type="number" min="0" :max="pl.remaining" class="form-input text-center" style="width: 80px;" placeholder="0" :disabled="pl.is_upcoming" />
                         </td>
                         <td v-else class="p-12 text-center">
                           <label class="flex items-center justify-center gap-4 cursor-pointer" :class="{'opacity-50': pl.is_upcoming}">
@@ -143,14 +148,11 @@
                         <td class="p-12">
                           <input v-model.number="bulkData[pl.id].fire_qty" type="number" min="0" class="form-input text-center" style="width: 80px;" placeholder="0" :disabled="pl.is_upcoming" />
                         </td>
-                        <td class="p-12 text-center">
-                          <input v-model="bulkData[pl.id].handover" type="checkbox" style="width: 18px; height: 18px; cursor: pointer;" :disabled="pl.is_upcoming" />
-                        </td>
                       </tr>
                       
                       <!-- Accordion Detay Satırı (Üretim veya Fire Varsa) -->
                       <tr v-if="bulkData[pl.id].qty_produced > 0 || bulkData[pl.id].fire_qty > 0 || bulkData[pl.id].is_processed" class="bg-slate-50 border-b">
-                        <td colspan="6" class="p-12">
+                        <td colspan="5" class="p-12">
                           <div class="grid grid-cols-1 md:grid-cols-2 gap-8 pl-16" style="border-left: 3px solid var(--primary-color);">
                             <div v-if="bulkData[pl.id].qty_produced > 0 || bulkData[pl.id].is_processed" class="form-group flex flex-col mb-0">
                               <label class="text-xs text-muted mb-4 font-bold">Yapılan İş Açıklaması</label>
@@ -259,14 +261,17 @@ const loading = ref(true)
 const selectedTask = ref(null)
 
 const showModal = ref(false)
-const bulkData = ref({}) // Format: { productLineId: { qty_produced: 0, fire_qty: 0, handover: false } }
+const bulkData = ref({}) // Format: { productLineId: { qty_produced: 0, fire_qty: 0 } }
 const commonForm = ref({})
 const saving = ref(false)
 const error = ref('')
 const stockItems = ref([])
 const reportDate = ref(new Date().toISOString().split('T')[0])
 
-const myTeamName = computed(() => auth.user?.department || '')
+const myTeamName = computed(() => {
+  const names = auth.user?.assigned_team_names || []
+  return [auth.user?.department, ...names].filter(Boolean).join(' ')
+})
 const canUseStock = computed(() => { const n = myTeamName.value.toUpperCase(); return n.includes('GIBEN') || n.includes('GİBEN') || n.includes('PVC') })
 const canFillPvcReport = computed(() => myTeamName.value.toUpperCase().includes('PVC'))
 const canFillGibenReport = computed(() => { const n = myTeamName.value.toUpperCase(); return n.includes('GIBEN') || n.includes('GİBEN') })
@@ -292,7 +297,7 @@ async function fetchQueue() {
     bulkData.value = {}
     tasks.value.forEach(t => {
       t.product_lines.forEach(pl => {
-        bulkData.value[pl.id] = { qty_produced: null, fire_qty: null, is_processed: false, handover: false, work_description: '', fire_reason: '', scrap_location: '' }
+        bulkData.value[pl.id] = { qty_produced: null, fire_qty: null, is_processed: false, work_description: '', fire_reason: '', scrap_location: '' }
       })
     })
 
@@ -332,7 +337,7 @@ function openBulkReportModal() {
 
   // Reset bulk form
   Object.keys(bulkData.value).forEach(k => {
-    bulkData.value[k] = { qty_produced: null, fire_qty: null, is_processed: false, handover: false, work_description: '', fire_reason: '', scrap_location: '' }
+    bulkData.value[k] = { qty_produced: null, fire_qty: null, is_processed: false, work_description: '', fire_reason: '', scrap_location: '' }
   })
 
   // Auto-fill work_description
@@ -343,7 +348,7 @@ function openBulkReportModal() {
         const color = pl.variant || pl.pvc_color || ''
         const dim = pl.dimension || pl.pvc_cut_size || ''
         
-        let autoDesc = `${t.title} - ${itemNumber}. Kalem (${pl.model_code})`
+        let autoDesc = `${t.task_title} - ${itemNumber}. Kalem (${pl.model_code})`
         let extras = []
         if (color) extras.push(color)
         if (dim) extras.push(dim)
@@ -383,26 +388,36 @@ function removeStock(index) {
 }
 
 async function submitBulkReport() {
-  // 1. Hangi kalemler doldurulmuş bul (qty > 0 veya fire > 0 veya handover == true)
+  // 1. Hangi kalemler doldurulmuş bul (qty > 0 veya fire > 0 veya işlem seçildi)
   const linesToSubmit = []
   for (const plId in bulkData.value) {
     const d = bulkData.value[plId]
     const q = d.qty_produced || 0
     const f = d.fire_qty || 0
     const p = d.is_processed || false
-    if (q > 0 || f > 0 || d.handover || p) {
+    if (q > 0 || f > 0 || p) {
+      const pl = findProductLine(plId)
+      const processedQty = p && q === 0 ? (pl?.remaining || 0) : q
+
+      if (processedQty > (pl?.remaining || 0)) {
+        error.value = `"${pl?.model_code || plId}" için işlenen miktar kalan miktarı aşamaz.`
+        return
+      }
       
       // Doğrulama: Fire varsa sebep ve konum zorunlu
       if (f > 0 && (!d.fire_reason?.trim() || !d.scrap_location?.trim())) {
         error.value = 'Lütfen fire girdiğiniz kalemler için "Fire Sebebi" ve "Fire Nerede" alanlarını eksiksiz doldurun.'
         return
       }
+      if (f > processedQty) {
+        error.value = 'Fire miktarı işlenen miktardan fazla olamaz.'
+        return
+      }
 
       linesToSubmit.push({
         id: plId,
-        qty_produced: p && q === 0 ? 0 : q, // Eğer sadece Seç işaretlendiyse 0 gönder
+        qty_produced: processedQty,
         fire_qty: f,
-        handover: d.handover,
         work_description: d.work_description || '',
         fire_reason: d.fire_reason || '',
         scrap_location: d.scrap_location || ''
@@ -411,7 +426,7 @@ async function submitBulkReport() {
   }
 
   if (linesToSubmit.length === 0) {
-    error.value = 'Lütfen tablodan en az bir kaleme üretim/fire miktarı girin veya devret seçeneğini işaretleyin.'
+    error.value = 'Lütfen tablodan en az bir kaleme işlenen/fire miktarı girin veya işlem seçeneğini işaretleyin.'
     return
   }
 
@@ -428,25 +443,25 @@ async function submitBulkReport() {
   }
 
   try {
-    // 2. Her bir kalem için log-production API isteği oluştur
-    const promises = linesToSubmit.map(item => {
-      // API'ye gönderilecek payload (Ortak Faaliyet Bilgileri + Bu Kaleme Özel Üretim Bilgisi)
+    const usedStocks = commonForm.value.used_stocks
+      ? commonForm.value.used_stocks.filter(s => s.item_id && s.quantity)
+      : []
+
+    for (let index = 0; index < linesToSubmit.length; index += 1) {
+      const item = linesToSubmit[index]
       const payload = {
         ...commonForm.value,
         qty_produced: item.qty_produced,
         fire_qty: item.fire_qty,
-        handover: item.handover,
         work_description: item.work_description,
         fire_reason: item.fire_reason,
         scrap_location: item.scrap_location,
         report_date: reportDate.value,
-        used_stocks: commonForm.value.used_stocks ? commonForm.value.used_stocks.filter(s => s.item_id && s.quantity) : []
+        consume_stock: index === 0,
+        used_stocks: index === 0 ? usedStocks : [],
       }
-      return api.post(`/tasks/product-lines/${item.id}/log-production/`, payload)
-    })
-
-    // 3. Tüm istekleri aynı anda (paralel) gönder ve bekle
-    await Promise.all(promises)
+      await api.post(`/tasks/product-lines/${item.id}/log-production/`, payload)
+    }
 
     showToast(`${linesToSubmit.length} kalem için gün sonu raporu başarıyla kaydedildi.`, 'success')
     showModal.value = false
@@ -466,6 +481,14 @@ async function submitBulkReport() {
   }
 }
 
+function findProductLine(plId) {
+  for (const task of tasks.value) {
+    const line = task.product_lines.find(pl => String(pl.id) === String(plId))
+    if (line) return line
+  }
+  return null
+}
+
 const statusLabels = { todo: 'Yapılacak', in_progress: 'Devam Ediyor', done: 'Tamamlandı' }
 const priorityLabels = { low: 'Düşük', medium: 'Orta', high: 'Yüksek', urgent: 'Acil' }
 const statusLabel = s => statusLabels[s] || s
@@ -474,25 +497,190 @@ function formatDate(d) { if (!d) return ''; return new Date(d).toLocaleDateStrin
 </script>
 
 <style scoped>
-.task-card { cursor: pointer; padding: 20px; transition: transform 0.15s, box-shadow 0.15s; }
-.task-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.12); }
-.task-card-title { font-size: 1.05rem; font-weight: 700; margin-bottom: 8px; line-height: 1.3; }
+.worker-page-header {
+  align-items: flex-start;
+  gap: 16px;
+}
+.worker-page-subtitle {
+  color: var(--text-secondary);
+  margin-top: 4px;
+  font-size: 0.98rem;
+}
+.worker-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.worker-primary-action {
+  font-size: 1rem;
+  padding: 12px 20px;
+}
+.task-card {
+  cursor: pointer;
+  padding: 22px;
+  transition: transform 0.15s, box-shadow 0.15s;
+  border-left: 4px solid var(--accent-blue);
+}
+.task-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+.task-card-title {
+  font-size: 1.15rem;
+  font-weight: 800;
+  margin-bottom: 10px;
+  line-height: 1.35;
+}
+.queue-summary {
+  border-left: 5px solid var(--accent-blue);
+}
+.queue-summary-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 18px;
+}
+.summary-kicker {
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.summary-owner {
+  font-size: 1.05rem;
+  font-weight: 800;
+  margin-top: 4px;
+}
+.summary-description {
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+.summary-progress {
+  min-width: 150px;
+  text-align: right;
+}
+.summary-progress div:last-child {
+  font-size: 2rem;
+  font-weight: 900;
+  color: var(--accent-blue);
+  line-height: 1.1;
+}
+.worker-line-card {
+  border-top: 4px solid var(--accent-blue);
+  padding: 24px;
+}
+.line-image {
+  width: 100%;
+  height: 180px;
+  object-fit: cover;
+  border-radius: var(--radius-md);
+  margin-bottom: 16px;
+  border: 1px solid var(--border-color);
+}
+.line-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.line-title {
+  font-size: 1.25rem;
+  font-weight: 900;
+  line-height: 1.25;
+}
+.line-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+.line-meta span {
+  background: var(--bg-card-hover);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  padding: 4px 10px;
+}
+.line-target {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 7px 12px;
+  border-radius: var(--radius-full);
+  background: var(--accent-orange-bg);
+  color: var(--accent-orange);
+  border: 1px solid #f9731633;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.line-note {
+  color: var(--text-primary);
+  background: #f8fafc;
+  border: 1px solid var(--border-color);
+  border-left: 4px solid var(--accent-blue);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  margin-bottom: 16px;
+  font-size: 0.98rem;
+}
 
 .progress-bar-bg { width: 100%; height: 8px; background: var(--bg-input); border-radius: 999px; overflow: hidden; }
 .progress-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-green)); border-radius: 999px; transition: width 0.4s ease; }
 
-.stats-row { display: flex; gap: 12px; }
-.stat-item { flex: 1; padding: 8px 12px; border-radius: var(--radius-sm); text-align: center; }
-.stat-label { display: block; font-size: 0.7rem; font-weight: 500; opacity: 0.8; }
-.stat-value { display: block; font-size: 1.1rem; font-weight: 800; }
-.stat-green { background: #f0fdf4; color: #15803d; }
-.stat-orange { background: #fff7ed; color: #c2410c; }
-.stat-red { background: #fef2f2; color: #dc2626; }
+.stats-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.stat-item { padding: 14px 12px; border-radius: var(--radius-md); text-align: center; border: 1px solid transparent; }
+.stat-label { display: block; font-size: 0.78rem; font-weight: 800; opacity: 0.8; text-transform: uppercase; letter-spacing: 0.4px; }
+.stat-value { display: block; font-size: 1.55rem; font-weight: 900; margin-top: 4px; }
+.stat-green { background: #e8f7ee; color: #11663a; border-color: #bfe9ce; }
+.stat-orange { background: #fff4df; color: #9a4c00; border-color: #ffdba1; }
+.stat-red { background: #fff0f0; color: #b42323; border-color: #ffc7c7; }
 .stat-blue { background: #eff6ff; color: #1d4ed8; }
 
-.report-section { margin-bottom: 16px; padding: 16px; background: var(--bg-input); border-radius: var(--radius-sm); border: 1px solid var(--border-color); }
+.report-section { margin-bottom: 16px; padding: 16px; background: #f8fafc; border-radius: var(--radius-sm); border: 1px solid var(--border-color); }
 .report-standard { border-left: 4px solid var(--accent-blue); }
 .report-pvc { border-left: 4px solid var(--accent-green); }
 .report-giben { border-left: 4px solid var(--accent-orange); }
 .report-stock { border-left: 4px solid var(--accent-purple); }
+@media (max-width: 768px) {
+  .worker-page-header {
+    flex-direction: column;
+  }
+  .worker-actions,
+  .worker-actions .btn {
+    width: 100%;
+  }
+  .worker-actions .btn {
+    justify-content: center;
+  }
+  .queue-summary-content,
+  .line-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .summary-progress {
+    text-align: left;
+  }
+  .line-target {
+    justify-content: center;
+    width: 100%;
+  }
+  .stats-row {
+    grid-template-columns: 1fr;
+  }
+  .stat-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    text-align: left;
+    min-height: 62px;
+  }
+  .stat-value {
+    margin-top: 0;
+    font-size: 1.65rem;
+  }
+}
 </style>

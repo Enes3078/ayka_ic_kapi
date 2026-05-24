@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 .Python
 backend/venv/
+.venv/
 backend/db.sqlite3
 backend/staticfiles/
 backend/media/
@@ -19,6 +20,7 @@ frontend/.next/
 frontend/.nuxt/
 .npm
 .eslintcache
+.tools/
 
 # OS Files
 .DS_Store

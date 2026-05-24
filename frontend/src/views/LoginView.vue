@@ -102,7 +102,7 @@ async function handleLogin() {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
-  padding: 40px;
+  padding: 42px 40px;
   width: 100%;
   max-width: 400px;
   box-shadow: var(--shadow-lg);
@@ -114,30 +114,32 @@ async function handleLogin() {
   margin-bottom: 32px;
 }
 .login-logo {
-  width: 56px;
-  height: 56px;
+  width: 58px;
+  height: 58px;
   margin: 0 auto 16px;
-  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
-  border-radius: var(--radius-lg);
+  background: var(--accent-blue);
+  border-radius: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.6rem;
-  box-shadow: 0 4px 20px rgba(79,110,247,0.3);
+  color: #ffffff;
+  font-size: 1.75rem;
+  font-weight: 800;
+  box-shadow: 0 10px 24px rgba(49,94,234,0.24);
 }
 .login-title {
-  font-size: 1.8rem;
+  font-size: 2rem;
   font-weight: 800;
-  letter-spacing: 2px;
-  background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  letter-spacing: 0.2px;
+  color: var(--accent-blue);
+  line-height: 1.15;
 }
 .login-subtitle {
-  font-size: 0.85rem;
-  color: var(--text-muted);
-  margin-top: 4px;
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  font-weight: 600;
+  margin-top: 8px;
+  line-height: 1.45;
 }
 
 .login-form {
@@ -157,8 +159,24 @@ async function handleLogin() {
 
 .login-hint {
   text-align: center;
-  font-size: 0.75rem;
-  color: var(--text-muted);
+  font-size: 0.86rem;
+  color: var(--text-secondary);
+  font-weight: 600;
   margin-top: 20px;
+}
+
+@media (max-width: 480px) {
+  .login-card {
+    padding: 34px 24px;
+    max-width: calc(100vw - 32px);
+  }
+
+  .login-title {
+    font-size: 2.05rem;
+  }
+
+  .login-subtitle {
+    font-size: 1rem;
+  }
 }
 </style>

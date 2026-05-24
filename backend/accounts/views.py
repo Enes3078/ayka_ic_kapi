@@ -49,7 +49,7 @@ class UserViewSet(viewsets.ModelViewSet):
     /api/auth/users/  — Sadece Admin kullanıcı yönetimi yapabilir.
     Self-delete koruması: Admin kendini silemez.
     """
-    queryset = CustomUser.objects.all()
+    queryset = CustomUser.objects.prefetch_related('teams')
     permission_classes = [IsAdminRole]
 
     def get_serializer_class(self):
