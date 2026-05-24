@@ -179,12 +179,6 @@ class Task(models.Model):
         self.full_clean()
         super().save(*args, **kwargs)
 
-        # Status 'done' olduğunda tüm ProductLine'larda qty_produced = quantity
-        if self.status == self.Status.DONE:
-            self.product_lines.filter(
-                qty_produced__lt=models.F('quantity')
-            ).update(qty_produced=models.F('quantity'))
-
 
 class ProductLine(models.Model):
     """
@@ -215,6 +209,7 @@ class ProductLine(models.Model):
     )
     image_base64 = models.TextField(blank=True, default='', verbose_name='Kalem Görseli (Base64)')
     
+    product_name = models.CharField(max_length=300, blank=True, default='', verbose_name='Ürün Adı')
     model_code = models.CharField(max_length=100, verbose_name='Model Kodu')
     variant = models.CharField(max_length=100, blank=True, default='', verbose_name='Varyant')
     dimension = models.CharField(
@@ -298,6 +293,88 @@ class ProductLine(models.Model):
             return self.workflow_team_ids[self.active_product_index]
         return None
 
+    def get_stage_history(self, stage_index=None):
+        """Verilen iş akışı aşamasının en güncel üretim kaydını döner."""
+        if stage_index is None:
+            stage_index = self.active_product_index
+        if not self.workflow_team_ids or stage_index < 0 or stage_index >= len(self.workflow_team_ids):
+            return None
+        team_id = self.workflow_team_ids[stage_index]
+        return self.histories.filter(team_id=team_id).order_by(
+            models.F('completed_at').desc(nulls_first=True),
+            '-started_at',
+        ).first()
+
+    def get_stage_input_quantity(self, stage_index=None):
+        """
+        Aşamaya gelen miktar.
+        İlk ekip sipariş miktarını, sonraki ekipler önceki ekipten çıkan sağlam miktarı işler.
+        """
+        if stage_index is None:
+            stage_index = self.active_product_index
+        if stage_index <= 0:
+            return self.quantity
+        previous_history = self.get_stage_history(stage_index - 1)
+        if not previous_history:
+            return 0
+        return max(0, previous_history.qty_produced_at_stage - previous_history.scrap_qty_at_stage)
+
+    def get_stage_processed_quantity(self, stage_index=None):
+        history = self.get_stage_history(stage_index)
+        return history.qty_produced_at_stage if history else 0
+
+    def get_stage_scrap_quantity(self, stage_index=None):
+        history = self.get_stage_history(stage_index)
+        return history.scrap_qty_at_stage if history else 0
+
+    def get_stage_remaining_quantity(self, stage_index=None):
+        return max(0, self.get_stage_input_quantity(stage_index) - self.get_stage_processed_quantity(stage_index))
+
+    def get_stage_completion_rate(self, stage_index=None):
+        stage_input = self.get_stage_input_quantity(stage_index)
+        if stage_input <= 0:
+            return 0
+        return min(100, round((self.get_stage_processed_quantity(stage_index) / stage_input) * 100, 1))
+
+    def get_final_good_quantity(self):
+        """Son tamamlanan aşamadan çıkan sağlam ürün miktarı."""
+        if not self.workflow_team_ids:
+            return max(0, min(self.qty_produced, self.quantity))
+
+        if self.stage_done:
+            summary_index = len(self.workflow_team_ids) - 1
+        else:
+            summary_index = self.active_product_index
+            if summary_index > 0 and not self.get_stage_history(summary_index):
+                summary_index -= 1
+
+        return max(
+            0,
+            min(
+                self.get_stage_processed_quantity(summary_index) - self.get_stage_scrap_quantity(summary_index),
+                self.quantity,
+            ),
+        )
+
+    def get_total_processed_quantity(self):
+        """Tüm aşamalardaki işlem kayıtlarını toplar; kapasite/verim değil faaliyet hacmidir."""
+        return sum(history.qty_produced_at_stage for history in self.histories.all())
+
+    def get_total_scrap_quantity(self):
+        return sum(history.scrap_qty_at_stage for history in self.histories.all())
+
+    def sync_totals_from_histories(self):
+        """Kalem üzerindeki özet miktarları aşama kayıtlarından yeniden hesaplar."""
+        histories = list(self.histories.all())
+        if not histories:
+            self.qty_produced = min(self.qty_produced, self.quantity)
+            self.fire_qty = min(self.fire_qty, self.quantity)
+            return
+
+        total_scrap = sum(h.scrap_qty_at_stage for h in histories)
+        self.qty_produced = self.get_final_good_quantity()
+        self.fire_qty = min(total_scrap, self.quantity)
+
 
 class ProductLineHistory(models.Model):
     """
@@ -351,6 +428,48 @@ class ProductLineHistory(models.Model):
         return f"{self.product_line.model_code} - {self.team.name} ({self.started_at.date()})"
 
 
+class ProductLineProductionLog(models.Model):
+    """Her gün sonu üretim girişi için değişmeyen faaliyet kaydı."""
+    product_line = models.ForeignKey(
+        ProductLine,
+        on_delete=models.CASCADE,
+        related_name='production_logs',
+    )
+    team = models.ForeignKey(
+        Team,
+        on_delete=models.CASCADE,
+        related_name='production_logs',
+    )
+    worker = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='production_logs',
+    )
+    report_date = models.DateField(default=timezone.localdate)
+    qty_produced = models.PositiveIntegerField(default=0)
+    scrap_qty = models.PositiveIntegerField(default=0)
+    working_hours = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    work_description = models.TextField(blank=True, default='')
+    fire_reason = models.TextField(blank=True, default='')
+    scrap_location = models.CharField(max_length=200, blank=True, default='')
+    activity_notes = models.TextField(blank=True, default='')
+    pvc_color = models.CharField(max_length=100, blank=True, default='')
+    pvc_roll_size = models.CharField(max_length=100, blank=True, default='')
+    pvc_meters = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    pvc_cut_size = models.CharField(max_length=200, blank=True, default='')
+    giben_plate_size = models.CharField(max_length=200, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Günlük Üretim Kaydı'
+        verbose_name_plural = 'Günlük Üretim Kayıtları'
+        ordering = ['-report_date', '-created_at']
+
+    def __str__(self):
+        return f"{self.product_line.model_code} - {self.team.name} ({self.report_date})"
+
+
 import datetime
 
 class SystemSettings(models.Model):
@@ -359,6 +478,10 @@ class SystemSettings(models.Model):
     """
     work_start_time = models.TimeField(default=datetime.time(8, 30), verbose_name='Mesai Başlangıç Saati')
     work_end_time = models.TimeField(default=datetime.time(18, 30), verbose_name='Mesai Bitiş Saati')
+
+    # Öğle molası çalışma süresinden sayılmaz.
+    lunch_break_start_time = models.TimeField(default=datetime.time(12, 30), verbose_name='Öğle Molası Başlangıç')
+    lunch_break_end_time = models.TimeField(default=datetime.time(13, 30), verbose_name='Öğle Molası Bitiş')
     
     # Ekstra mesai (isteğe bağlı)
     overtime_start_time = models.TimeField(null=True, blank=True, verbose_name='Fazla Mesai Başlangıç')

@@ -18,7 +18,7 @@ class ReportingService:
         total_produced = 0
         for pl in product_lines:
             total_qty += pl.quantity
-            total_produced += pl.qty_produced
+            total_produced += pl.get_final_good_quantity()
 
         if total_qty == 0:
             return 0.0
@@ -32,8 +32,8 @@ class ReportingService:
         total_produced = 0
         total_scrap = 0
         for pl in product_lines:
-            total_produced += pl.qty_produced
-            total_scrap += pl.fire_qty
+            total_produced += pl.get_final_good_quantity()
+            total_scrap += pl.get_total_scrap_quantity()
 
         denominator = total_produced + total_scrap
         if denominator == 0:

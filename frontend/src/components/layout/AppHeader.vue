@@ -49,4 +49,15 @@ const pageTitle = computed(() => pageTitles[route.name] || route.name || '')
   align-items: center;
   gap: 12px;
 }
+@media (max-width: 768px) {
+  .app-header {
+    padding: 0 14px;
+  }
+  .header-page-title {
+    font-size: 1rem;
+  }
+  .header-right .btn {
+    padding-inline: 12px;
+  }
+}
 </style>

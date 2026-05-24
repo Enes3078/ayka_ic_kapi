@@ -47,7 +47,7 @@
             <label class="form-label">Ay</label>
             <select v-model="taskFilters.month" class="form-select" @change="fetchTaskReport">
               <option value="">Tümü</option>
-              <option v-for="m in 12" :key="m" :value="m">{{ m }}. Ay</option>
+              <option v-for="(monthName, index) in monthNames" :key="monthName" :value="index + 1">{{ monthName }}</option>
             </select>
           </div>
           <div class="form-group" style="flex:1;min-width:150px;">
@@ -134,8 +134,16 @@
             <div class="stat-value" style="color: var(--accent-blue);">{{ prodReport?.aggregate?.total_logs || 0 }}</div>
           </div>
           <div class="stat-card">
-            <div class="stat-title">Toplam Üretilen (Miktar)</div>
+            <div class="stat-title">Sağlam Çıkan Miktar</div>
             <div class="stat-value" style="color: var(--accent-green);">{{ prodReport?.aggregate?.total_produced || 0 }}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-title">İşlenen Miktar</div>
+            <div class="stat-value" style="color: var(--accent-blue);">{{ prodReport?.aggregate?.total_processed || 0 }}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-title">Toplam Fire</div>
+            <div class="stat-value" style="color: var(--accent-red);">{{ prodReport?.aggregate?.total_scrap || 0 }}</div>
           </div>
         </div>
 
@@ -153,7 +161,7 @@
                   <th>Ekip</th>
                   <th>İşçi</th>
                   <th class="text-right">Hedef</th>
-                  <th class="text-right">Üretilen</th>
+                  <th class="text-right">İşlenen</th>
                   <th class="text-right">Fire</th>
                 </tr>
               </thead>
@@ -303,6 +311,10 @@ const teamDate = ref(new Date().toISOString().slice(0, 10))
 const taskReport = ref(null)
 const prodReport = ref(null)
 const currentTeamReport = ref(null)
+const monthNames = [
+  'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
+  'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık',
+]
 
 onMounted(async () => {
   await fetchTeams()
@@ -427,7 +439,7 @@ function exportToPDF() {
   } else if (activeTab.value === 'production') {
     doc.text(tr2en('Uretim Raporu - ' + prodFilters.value.date), 14, 20)
     doc.setFontSize(11)
-    doc.text(tr2en(`Toplam Uretim (Miktar): ${prodReport.value?.aggregate?.total_produced || 0}`), 14, 28)
+    doc.text(tr2en(`Saglam Cikan: ${prodReport.value?.aggregate?.total_produced || 0} | Islenen: ${prodReport.value?.aggregate?.total_processed || 0} | Fire: ${prodReport.value?.aggregate?.total_scrap || 0}`), 14, 28)
     
     const rows = prodReport.value?.logs?.map(l => [
       tr2en(l.task_title), tr2en(l.model_code), tr2en(l.team), tr2en(l.worker),
@@ -436,7 +448,7 @@ function exportToPDF() {
     
     autoTable(doc, {
       startY: 35,
-      head: [['Gorev', 'Kalem Kodu', 'Ekip', 'Isci', 'Hedef', 'Uretilen', 'Fire']],
+      head: [['Gorev', 'Kalem Kodu', 'Ekip', 'Isci', 'Hedef', 'Islenen', 'Fire']],
       body: rows,
       theme: 'grid',
       headStyles: { fillColor: [40, 167, 69] }
